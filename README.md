@@ -12,6 +12,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 - [Installation (une seule fois)](#installation-une-seule-fois)
 - [Utiliser un autre PC](#utiliser-un-autre-pc)
 - [Toutes les commandes](#toutes-les-commandes)
+  - [Surveiller le CPU et la RAM en direct](#surveiller-le-cpu-et-la-ram-en-direct)
 - [Travailler sur plusieurs projets](#travailler-sur-plusieurs-projets)
 - [Arrêt automatique](#arrêt-automatique)
 - [Bureau graphique (DCV)](#bureau-graphique-dcv)
@@ -195,6 +196,18 @@ Les paramètres de création sont mémorisés sur le PC : ces commandes n'en dem
 | `devbox-off` | éteint la VM tout de suite |
 | `devbox-off 10` | éteint la VM dans 10 minutes (`devbox-off cancel` pour annuler) |
 | `devbox-hold 2h` | suspend l'arrêt automatique pendant 2 heures (`devbox-hold off` pour le réactiver) |
+
+### Surveiller le CPU et la RAM en direct
+
+Depuis PowerShell sur le PC, VM allumée :
+
+| Pour voir | Commande | Pour quitter |
+|---|---|---|
+| CPU par cœur, RAM et processus | `ssh -t devbox htop` | `q` |
+| CPU et RAM de chaque conteneur Docker | `ssh -t devbox docker stats` | `Ctrl+C` |
+| Un relevé ponctuel | `ssh devbox "free -h; uptime"` | (rien à faire) |
+
+Ouvre-les dans un deuxième onglet du Terminal Windows pendant que Claude travaille. Ils n'empêchent pas l'arrêt automatique.
 
 ## Travailler sur plusieurs projets
 
