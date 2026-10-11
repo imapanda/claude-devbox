@@ -2,13 +2,321 @@
 
 Une machine de développement sur AWS, allumée à la demande, pour faire tourner **Claude Code** et tes conteneurs **Docker** ailleurs que sur ton PC.
 
-Tu la pilotes depuis **Claude Desktop** en SSH, comme si elle était locale, avec un bureau graphique **Amazon DCV** en option. Elle s'éteint toute seule quand Claude a fini de travailler.
+Tu la pilotes depuis **Claude Desktop**, comme si elle était locale. Elle s'éteint toute seule quand Claude a fini de travailler. Un bureau graphique (Amazon DCV) est disponible en option.
 
 Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 
-## Pourquoi
+## Sommaire
 
-Claude Code lance des builds, des tests et des stacks Docker. Sur un portable avec 16 Go de RAM, ça sature vite et ça chauffe. Ici, tout tourne sur la VM : le PC ne sert plus que d'écran.
+- [Au quotidien](#au-quotidien)
+- [Installation (une seule fois)](#installation-une-seule-fois)
+- [Utiliser un autre PC](#utiliser-un-autre-pc)
+- [Toutes les commandes](#toutes-les-commandes)
+- [Travailler sur plusieurs projets](#travailler-sur-plusieurs-projets)
+- [Arrêt automatique](#arrêt-automatique)
+- [Bureau graphique (DCV)](#bureau-graphique-dcv)
+- [Changer la puissance](#changer-la-puissance)
+- [Depuis un téléphone](#depuis-un-téléphone)
+- [Coûts](#coûts)
+- [Questions fréquentes](#questions-fréquentes)
+- [Dépannage](#dépannage)
+- [Comment ça marche](#comment-ça-marche)
+- [Sécurité](#sécurité)
+- [Supprimer](#supprimer)
+- [Paramètres du script](#paramètres-du-script)
+
+## Au quotidien
+
+Une fois l'installation faite, tu n'as que trois gestes. Les commandes se lancent dans **PowerShell**, depuis le dossier du dépôt (`cd $HOME\claude-devbox`).
+
+| | Quoi | Comment |
+|---|---|---|
+| 1 | **Démarrer la VM** | `.\DevBox.ps1 -Action Start` |
+| 2 | **Travailler** | Claude Desktop > onglet **Code** > nouvelle session > environnement **devbox** |
+| 3 | **Arrêter** | Rien à faire : la VM s'éteint seule 15 min après la fin du travail de Claude. Pour couper tout de suite : `.\DevBox.ps1 -Action Stop` |
+
+Pour savoir où elle en est : `.\DevBox.ps1` (sans paramètre) affiche son état.
+
+Claude Desktop ne démarre pas la VM tout seul : lance toujours l'étape 1 avant d'ouvrir une session.
+
+## Installation (une seule fois)
+
+Compte 30 minutes, dont 15 d'attente pendant que la VM s'installe.
+
+### Étape 1 : vérifier les prérequis
+
+- Windows 10 ou 11, avec PowerShell (déjà présent).
+- [Git pour Windows](https://git-scm.com/downloads/win), pour récupérer le dépôt.
+- [Claude Desktop](https://claude.com/download), avec un abonnement qui donne accès à Claude Code.
+- Un compte AWS. Note son **ID à 12 chiffres** (en haut à droite de la console).
+
+L'AWS CLI et le plugin Session Manager s'installent automatiquement à la première exécution du script.
+
+### Étape 2 : créer un accès AWS pour le script
+
+Le script a besoin d'identifiants AWS. Le plus simple : un utilisateur IAM dédié, limité à ce dont le script a besoin.
+
+Dans la console AWS, ouvre **CloudShell** (icône `>_` en haut de la page) et colle :
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+aws iam create-user --user-name devbox-cli
+
+cat > devbox-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "Ec2SsmBudgets", "Effect": "Allow",
+      "Action": ["ec2:*", "ssm:*", "budgets:*"], "Resource": "*" },
+    { "Sid": "RoleDevbox", "Effect": "Allow",
+      "Action": ["iam:GetRole", "iam:CreateRole", "iam:DeleteRole", "iam:TagRole",
+                 "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+                 "iam:PassRole", "iam:GetInstanceProfile", "iam:CreateInstanceProfile",
+                 "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile"],
+      "Resource": ["arn:aws:iam::${ACCOUNT}:role/*-ec2-role", "arn:aws:iam::${ACCOUNT}:instance-profile/*-ec2-role"] },
+    { "Sid": "Alias", "Effect": "Allow", "Action": "iam:ListAccountAliases", "Resource": "*" }
+  ]
+}
+EOF
+
+aws iam put-user-policy --user-name devbox-cli --policy-name devbox --policy-document file://devbox-policy.json
+aws iam create-access-key --user-name devbox-cli --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text
+rm devbox-policy.json
+```
+
+La dernière commande affiche la **clé d'accès** et son **secret**. Le secret n'est montré qu'une fois : garde-le pour l'étape 4 et ne le partage avec personne.
+
+Tu utilises déjà IAM Identity Center (SSO) ? Tu peux t'en servir à la place : le script lance l'assistant de connexion SSO.
+
+### Étape 3 : récupérer le script
+
+Dans PowerShell :
+
+```powershell
+cd $HOME
+git clone https://github.com/imapanda/claude-devbox.git
+cd claude-devbox
+Unblock-File .\DevBox.ps1
+```
+
+Si Windows refuse encore d'exécuter le script : `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+### Étape 4 : créer la VM
+
+Remplace l'ID de compte et l'e-mail par les tiens :
+
+```powershell
+.\DevBox.ps1 -Action Create -AwsProfile devbox -AccountId 123456789012 -BudgetEmail moi@exemple.com
+```
+
+Le script te pose quelques questions :
+
+1. **Type de connexion** : `2` pour la clé d'accès de l'étape 2 (ou `1` pour SSO).
+2. **AWS Access Key ID** et **Secret Access Key** : colle la clé et le secret.
+3. **Default region** : `eu-west-1`. **Output format** : `json`.
+4. Après 10 à 15 minutes d'installation : le **mot de passe du bureau graphique**, deux fois. Les caractères ne s'affichent pas, c'est normal.
+
+À la fin, le script affiche « Machine prête ».
+
+- `-AccountId` est un garde-fou : le script refuse de continuer si les identifiants pointent sur un autre compte.
+- `-BudgetEmail` est facultatif : il active une alerte e-mail si la facture approche du budget (150 $/mois par défaut).
+
+### Étape 5 : connecter Claude Desktop
+
+1. **Quitte complètement Claude Desktop et relance-le** (zone de notification > Quitter). Il doit relire le PATH pour trouver l'AWS CLI qui vient d'être installée.
+2. Onglet **Code** > menu **Environnement** > **+ Add SSH connection** :
+   - **Name** : `devbox`
+   - **SSH Host** : `devbox`
+   - laisse le port et la clé vides.
+3. Ouvre une nouvelle session sur l'environnement `devbox`, dossier `/home/ubuntu`. La première connexion installe Claude Code sur la VM (environ une minute).
+
+### Étape 6 : préparer tes projets sur la VM
+
+Connecte GitHub sur la VM et récupère un projet :
+
+```powershell
+ssh devbox
+gh auth login          # suis les instructions : un code à valider dans ton navigateur
+mkdir -p ~/projets && cd ~/projets
+git clone https://github.com/<ton-compte>/<ton-projet>.git
+exit
+```
+
+Dans Claude Desktop, ouvre ensuite une session sur le dossier `~/projets/<ton-projet>`.
+
+### Étape 7 : vérifier que tout marche
+
+Après un premier échange avec Claude :
+
+```powershell
+ssh devbox "ls /var/lib/devbox/claude"
+```
+
+Un fichier doit apparaître : l'arrêt automatique voit bien Claude travailler.
+
+## Utiliser un autre PC
+
+Sur le nouveau PC : étapes 1 et 3 de l'installation (prérequis et récupération du script), configuration du profil AWS (`aws configure --profile devbox` avec la même clé, ou une clé dédiée), puis :
+
+```powershell
+.\DevBox.ps1 -Action Join -AwsProfile devbox -AccountId 123456789012
+```
+
+Le script retrouve la VM, la démarre si besoin, crée une **clé SSH propre à ce PC**, l'ajoute sur la VM et configure SSH. Termine par l'étape 5 (Claude Desktop).
+
+## Toutes les commandes
+
+### Sur le PC (PowerShell, dossier `claude-devbox`)
+
+| Commande | Effet |
+|---|---|
+| `.\DevBox.ps1` | affiche l'état de la VM |
+| `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte à AWS si besoin) |
+| `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
+| `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
+| `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau graphique |
+| `.\DevBox.ps1 -Action Idle -IdleMinutes 30` | change le délai d'arrêt automatique |
+| `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la puissance de la VM |
+| `.\DevBox.ps1 -Action Join ...` | rattache un nouveau PC à la VM |
+| `.\DevBox.ps1 -Action Remove` | supprime la VM et tout ce que le script a créé |
+| `ssh devbox` | ouvre un terminal sur la VM |
+
+Les paramètres de création sont mémorisés sur le PC : ces commandes n'en demandent pas d'autres.
+
+### Sur la VM (terminal `ssh devbox`, ou en le demandant à Claude dans une session)
+
+| Commande | Effet |
+|---|---|
+| `devbox-off` | éteint la VM tout de suite |
+| `devbox-off 10` | éteint la VM dans 10 minutes (`devbox-off cancel` pour annuler) |
+| `devbox-hold 2h` | suspend l'arrêt automatique pendant 2 heures (`devbox-hold off` pour le réactiver) |
+
+## Travailler sur plusieurs projets
+
+Une seule connexion `devbox` suffit pour tous les projets.
+
+- **Un dossier par projet** sur la VM (`~/projets/mon-api`, `~/projets/mon-site`), chacun avec son dépôt Git.
+- **Une session Claude Desktop par tâche** : chaque session a son dossier et son historique. Elles tournent en parallèle dans la barre latérale, que tu peux filtrer et grouper par projet.
+- **Plusieurs sessions sur le même projet** : coche l'option **worktree** au démarrage de la session. Chacune travaille alors sur sa propre copie Git.
+- **Ports Docker** : deux stacks sur le même port entrent en conflit. Mets les ports dans un `.env` par projet, précise la règle dans le `CLAUDE.md`, et ajoute un fichier `.worktreeinclude` pour copier le `.env` dans chaque worktree.
+- **Mémoire** : avec 32 Go et environ 5 Go par stack, compte 4 à 5 stacks actives en même temps.
+
+Le panneau Terminal de Claude Desktop ne fonctionne qu'en local : garde une fenêtre `ssh devbox` ouverte à côté si besoin.
+
+Pour des environnements complètement séparés, crée une seconde VM avec un autre nom (`-Name devbox-perso`) : elle apparaît comme un second hôte SSH et s'allume indépendamment.
+
+## Arrêt automatique
+
+La VM s'éteint quand **Claude a fini de travailler** depuis 15 minutes. Une vérification tourne chaque minute sur la VM.
+
+| Situation | Décision |
+|---|---|
+| Claude travaille | reste allumée |
+| Claude a fini depuis moins de 15 min | reste allumée |
+| Claude a fini depuis plus de 15 min | **s'éteint** |
+| Claude attend ta validation depuis plus de 15 min | **s'éteint** |
+| Une boucle `/loop` tourne | reste allumée |
+| Bureau graphique connecté | reste allumée |
+| Build ou tests qui font travailler le processeur | reste allumée |
+| Session Claude Desktop ouverte mais inactive | **s'éteint** |
+| `devbox-hold` actif | reste allumée |
+
+Bon à savoir :
+- Le délai se change avec `.\DevBox.ps1 -Action Idle -IdleMinutes 30`.
+- Les 15 premières minutes après un démarrage ne comptent pas.
+- « S'éteindre » veut dire arrêtée, pas supprimée : le disque et ton code restent intacts. Relance avec `-Action Start`.
+- À l'arrêt, la session Claude Desktop se coupe. Ton historique est conservé sur la VM.
+- Une boucle garde la VM allumée tant que deux itérations sont espacées de moins de 2 heures.
+
+## Bureau graphique (DCV)
+
+```powershell
+.\DevBox.ps1 -Action Dcv
+```
+
+Le script démarre la VM si besoin, ouvre un tunnel dans une petite fenêtre séparée et lance `https://localhost:18443` dans ton navigateur.
+
+- Le certificat est auto-signé : accepte l'avertissement du navigateur.
+- Identifiant : `ubuntu`. Mot de passe : celui choisi à l'installation (`-Action Password` pour le changer).
+- Ferme la fenêtre du tunnel pour couper le bureau.
+- Le client DCV natif, plus fluide, se connecte à `localhost:18443`.
+
+## Changer la puissance
+
+```powershell
+.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge
+```
+
+La VM s'arrête, change de type et redémarre en quelques minutes.
+
+| Type | Cœurs · Mémoire | Prix indicatif | Quand le choisir |
+|---|---|---|---|
+| `m8a.2xlarge` | 8 · 32 Go | ~0,54 $/h | par défaut |
+| `c8a.4xlarge` | 16 · 32 Go | ~0,93 $/h | builds et tests plus rapides |
+| `m8a.4xlarge` | 16 · 64 Go | ~1,09 $/h | beaucoup de conteneurs |
+
+Pour décider, regarde `htop` sur la VM pendant une grosse session : processeur à 100 % pendant les builds, prends `c8a.4xlarge` ; mémoire saturée, prends `m8a.4xlarge`.
+
+## Depuis un téléphone
+
+Le script ne l'automatise pas encore. Pour piloter la VM depuis l'application Claude (iPhone, Android) ou depuis claude.ai/code :
+
+1. Sur les plans Team et Enterprise, un Owner active **Remote Control** dans les réglages admin de Claude Code.
+2. Sur la VM, installe Claude Code en ligne de commande et connecte-toi :
+   ```bash
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude   # puis /login
+   ```
+3. Dans un dossier de projet, lance le serveur dans `tmux` :
+   ```bash
+   cd ~/projets/mon-api
+   claude remote-control --spawn worktree
+   ```
+4. Dans l'application, onglet **Code** : la VM apparaît, et tu peux y ouvrir ou créer des sessions.
+
+La VM doit être allumée : depuis le téléphone, l'application AWS Console permet de la démarrer.
+
+## Coûts
+
+Prix à la demande en Irlande (`eu-west-1`), relevés en octobre 2026. Vérifie les tarifs du moment.
+
+| Poste | Prix | Exemple sur 160 h/mois (8 h × 20 jours) |
+|---|---|---|
+| `m8a.2xlarge` allumée | ~0,54 $/h | ~87 $ |
+| Disque 100 Go, 250 Mo/s | ~15 $/mois | facturé même VM éteinte |
+| IPv4 publique | ~0,005 $/h | facturée seulement VM allumée |
+
+Une VM éteinte ne coûte que son disque.
+
+## Questions fréquentes
+
+**Comment démarrer la VM ?**
+`.\DevBox.ps1 -Action Start` sur le PC. Sans le script : console AWS > EC2 > Instances > `devbox` > État de l'instance > Démarrer (ou l'application mobile AWS Console).
+
+**Comment savoir si elle est allumée ?**
+`.\DevBox.ps1` affiche son état. Ou la console AWS, page EC2 > Instances.
+
+**Suis-je prévenu par e-mail quand elle démarre ou s'arrête ?**
+Non. Le seul e-mail est l'alerte budget, si tu as renseigné `-BudgetEmail`.
+
+**Est-ce que je perds mon travail quand elle s'éteint ?**
+Non. Les fichiers, les dépôts et l'historique des sessions restent sur le disque. Seuls les processus en cours (conteneurs, serveurs de dev) s'arrêtent, et le travail non poussé sur Git reste sur la VM.
+
+**Je dois emporter le script partout ?**
+Non : il est sur GitHub. Sur un nouveau PC, clone le dépôt et lance `-Action Join` une fois.
+
+## Dépannage
+
+| Symptôme | Que faire |
+|---|---|
+| Claude Desktop n'arrive pas à se connecter | La VM est-elle allumée (`.\DevBox.ps1`) ? Claude Desktop a-t-il été relancé après l'installation ? Teste `ssh -v devbox exit` dans PowerShell |
+| `aws` introuvable | Ferme et rouvre PowerShell, puis relance la commande |
+| `Identifiants refusés` | Vérifie la clé : `aws sts get-caller-identity --profile devbox` |
+| `InsufficientInstanceCapacity` à la création | Réessaie plus tard, ou choisis un autre type d'instance |
+| Installation incomplète | Journal sur la VM : `ssh devbox "sudo tail -n 100 /var/log/devbox-init.log"` |
+| La VM s'éteint trop tôt | Augmente le délai (`-Action Idle -IdleMinutes 30`) ou utilise `devbox-hold 2h` |
+| La VM ne s'éteint jamais | `ssh devbox "ls /var/lib/devbox/claude; journalctl -t devbox"` |
+| Bureau graphique injoignable | `ssh devbox "sudo dcv list-sessions"`, puis relance `-Action Dcv` |
 
 ## Comment ça marche
 
@@ -27,211 +335,32 @@ AWS Systems Manager ────────────────────
 
 - Aucun port n'est ouvert sur Internet : SSH passe dans un tunnel **AWS Systems Manager (SSM)**.
 - La VM est désignée par son **ID d'instance**, qui ne change pas entre deux arrêts. Pas d'IP fixe à payer.
-- Claude Desktop installe Claude Code sur la VM à la première connexion.
+- Claude Code tourne **sur la VM** : Claude Desktop n'est que l'interface.
 
-## Ce que le script crée
+Ce que le script crée :
 
 | Élément | Détail |
 |---|---|
-| Instance EC2 | `m8a.2xlarge` (8 cœurs AMD, 32 Go), Ubuntu 24.04, dans une zone où `c8a.4xlarge` et `m8a.4xlarge` existent aussi (changement de taille possible plus tard) |
+| Instance EC2 | `m8a.2xlarge` (8 cœurs AMD, 32 Go), Ubuntu 24.04, dans une zone où `c8a.4xlarge` et `m8a.4xlarge` existent aussi |
 | Disque | gp3 chiffré, 100 Go, débit 250 Mo/s |
-| Rôle IAM | SSM et licence DCV uniquement, aucune autre permission |
+| Rôle IAM de la VM | SSM et licence DCV uniquement |
 | Groupe de sécurité | aucune règle entrante |
 | Logiciels | Docker et Compose, Git, GitHub CLI, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
-| Arrêt automatique | la VM s'éteint après une période sans activité de Claude (voir plus bas) |
-| Côté PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
+| Sur le PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
 | Budget (option) | alerte e-mail à 80 % du budget mensuel (réel) et à 100 % (prévision) |
-
-## Coûts indicatifs
-
-Prix à la demande en Irlande (`eu-west-1`), relevés en octobre 2026. Vérifie les tarifs du moment avant de te lancer.
-
-| Poste | Prix | Exemple sur 160 h/mois (8 h × 20 jours) |
-|---|---|---|
-| `m8a.2xlarge` allumée | ~0,54 $/h | ~87 $ |
-| Disque 100 Go, 250 Mo/s | ~15 $/mois | facturé même VM éteinte |
-| IPv4 publique | ~0,005 $/h | facturée seulement VM allumée |
-
-Une VM éteinte ne coûte que son disque. Allumée en permanence, la même machine coûte environ 4,5 fois plus.
-
-## Prérequis
-
-- Windows 10 ou 11, PowerShell 5.1 ou 7.
-- Le client OpenSSH de Windows (installé par défaut sur les versions récentes).
-- Un compte AWS et une identité avec les droits EC2, IAM, SSM et Budgets. Pour la création, un rôle administrateur est le plus simple.
-- Claude Desktop, avec un abonnement qui donne accès à Claude Code.
-- L'AWS CLI v2 et le plugin Session Manager : le script les installe via `winget` s'ils manquent.
-
-## Démarrage rapide
-
-### 1. Récupérer le script
-
-```powershell
-git clone https://github.com/imapanda/claude-devbox.git
-cd claude-devbox
-Unblock-File .\DevBox.ps1
-```
-
-Si Windows bloque toujours l'exécution : `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
-
-### 2. Créer la VM
-
-```powershell
-.\DevBox.ps1 -Action Create -AwsProfile devbox -AccountId 123456789012 -BudgetEmail moi@exemple.com
-```
-
-- `-AwsProfile` : le profil AWS CLI à utiliser. S'il n'existe pas, le script lance l'assistant de configuration (SSO recommandé, ou clés d'accès IAM).
-- `-AccountId` : l'ID du compte AWS attendu. Le script refuse de continuer si le profil pointe sur un autre compte. Sans ce paramètre, il te demande de confirmer le compte détecté.
-- `-BudgetEmail` : facultatif, active l'alerte budget.
-
-Compte 10 à 15 minutes. À la fin, le script te demande le mot de passe du bureau DCV (utilisateur `ubuntu`).
-
-### 3. Ajouter la VM dans Claude Desktop
-
-Onglet **Code** > menu **Environnement** > **+ Add SSH connection** :
-
-- **Name** : `devbox`
-- **SSH Host** : `devbox`
-- laisse le port et la clé vides : tout est dans `~/.ssh/config`.
-
-Ensuite, à chaque nouvelle session, choisis l'environnement `devbox` et un dossier **sur la VM**.
-
-## Utiliser un autre PC
-
-Sur le nouveau PC, récupère le dépôt puis :
-
-```powershell
-.\DevBox.ps1 -Action Join -AwsProfile devbox -AccountId 123456789012
-```
-
-Le script retrouve la VM par son nom, la démarre si besoin, crée une clé SSH propre à ce PC, l'ajoute sur la VM via SSM et écrit `~/.ssh/config`. Il ne reste qu'à ajouter la connexion dans Claude Desktop (étape 3 ci-dessus).
-
-Chaque PC a sa propre clé, nommée `devbox-<NOM-DU-PC>`, ce qui permet d'en révoquer une sans toucher aux autres (voir [Sécurité](#sécurité)).
-
-## Usage quotidien
-
-| Commande | Effet |
-|---|---|
-| `.\DevBox.ps1` | état de la VM |
-| `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte si la session SSO a expiré) |
-| `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
-| `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
-| `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau DCV |
-| `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la taille de la VM |
-| `.\DevBox.ps1 -Action Idle -IdleMinutes 60` | change le délai d'arrêt automatique |
-| `.\DevBox.ps1 -Action Remove` | supprime la VM et tout ce que le script a créé |
-
-Les paramètres de création sont mémorisés : ces commandes n'en demandent pas d'autres.
-
-Claude Desktop ne démarre pas la VM tout seul : lance `-Action Start` avant d'ouvrir une session. La console AWS (web ou application mobile) permet aussi de la démarrer.
-
-## Travailler sur plusieurs projets
-
-Une seule connexion SSH suffit pour tous les projets.
-
-- Range chaque projet dans son dossier sur la VM, par exemple `~/projets/mon-api` et `~/projets/mon-site`, chacun avec son dépôt Git.
-- Dans Claude Desktop, chaque session a son dossier et son historique. Elles tournent en parallèle dans la barre latérale, que tu peux filtrer et grouper par projet.
-- Pour plusieurs sessions sur **le même** projet, coche l'option **worktree** au démarrage : chaque session travaille sur sa propre copie Git.
-- **Ports Docker** : deux stacks qui écoutent sur le même port entrent en conflit. Mets les ports dans un `.env` par projet, précise la règle dans le `CLAUDE.md`, et ajoute un fichier `.worktreeinclude` pour copier le `.env` dans chaque worktree.
-- **RAM** : avec 32 Go et environ 5 Go par stack, compte 4 à 5 stacks actives en même temps. Au-delà, passe en `m8a.4xlarge`.
-
-Le panneau Terminal de Claude Desktop n'est disponible qu'en local : garde une fenêtre `ssh devbox` ouverte à côté si besoin.
-
-Pour des environnements complètement séparés, crée une seconde VM avec un autre nom : `-Name devbox-perso`. Elle apparaît comme un second hôte SSH et s'allume indépendamment.
-
-## Bureau graphique (DCV)
-
-```powershell
-.\DevBox.ps1 -Action Dcv
-```
-
-Le script démarre la VM si besoin, ouvre un tunnel SSM dans une fenêtre séparée et lance `https://localhost:18443` dans le navigateur. Le certificat est auto-signé : accepte l'avertissement. Identifiant `ubuntu`, avec le mot de passe choisi à la création. Ferme la fenêtre du tunnel pour couper la connexion.
-
-Le client DCV natif, plus fluide, se connecte à `localhost:18443`.
-
-## Arrêt automatique
-
-Des *hooks* Claude Code installés sur la VM notent l'état de chaque session. Une vérification tourne chaque minute.
-
-| Situation | Décision |
-|---|---|
-| Claude travaille | reste allumée |
-| Claude a fini depuis moins que le délai | reste allumée |
-| Claude a fini depuis plus que le délai | **arrêt** |
-| Claude attend ta validation depuis plus que le délai | **arrêt** |
-| Une boucle `/loop` tourne | reste allumée |
-| Bureau DCV connecté | reste allumée |
-| Build ou tests qui chargent le CPU | reste allumée |
-| Session Claude Desktop ouverte mais inactive | **arrêt** |
-
-- Pour éteindre tout de suite depuis la VM (terminal, ou en demandant à Claude dans une session) : `devbox-off`. Variantes : `devbox-off 10` (dans 10 minutes), `devbox-off cancel`. La session Claude Desktop se coupe à l'arrêt.
-- Délai par défaut : 15 minutes. À la création : `-IdleMinutes 30`. Après coup : `-Action Idle -IdleMinutes 30`.
-- Pour travailler sans Claude (terminal, outils), suspends l'arrêt sur la VM : `devbox-hold 2h`, puis `devbox-hold off`.
-- Une boucle garde la VM allumée tant que deux itérations sont espacées de moins de 2 heures.
-- Une session restée « occupée » sans nouvelle depuis 90 minutes est considérée comme plantée.
-- Les 15 premières minutes après un démarrage ne comptent pas.
-- L'arrêt éteint l'instance sans la supprimer : disque et code restent intacts.
-
-Vérifier que les hooks fonctionnent : après un premier message dans une session, `ls /var/lib/devbox/claude` sur la VM doit afficher un fichier par session.
-
-## Changer la puissance
-
-```powershell
-.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge
-```
-
-La VM s'arrête, change de type et redémarre en quelques minutes.
-
-| Type | Cœurs · RAM | Prix indicatif (Irlande) | Quand |
-|---|---|---|---|
-| `m8a.2xlarge` | 8 · 32 Go | ~0,54 $/h | par défaut |
-| `c8a.4xlarge` | 16 · 32 Go | ~0,93 $/h | builds et tests plus rapides |
-| `m8a.4xlarge` | 16 · 64 Go | ~1,09 $/h | beaucoup de conteneurs |
-
-Surveille `htop` pendant une grosse session : CPU à 100 % pendant les builds, prends `c8a.4xlarge` ; RAM saturée, prends `m8a.4xlarge`. Évite les familles Intel en `i` : à prix égal, elles ont deux fois moins de vrais cœurs.
-
-## Depuis un téléphone (Remote Control)
-
-Le script ne l'automatise pas encore. Pour piloter la VM depuis l'application Claude (iPhone, Android) ou claude.ai/code :
-
-1. Sur les plans Team et Enterprise, un Owner active **Remote Control** dans les réglages admin de Claude Code.
-2. Sur la VM, installe Claude Code en ligne de commande et connecte-toi :
-   ```bash
-   curl -fsSL https://claude.ai/install.sh | bash
-   claude   # puis /login
-   ```
-3. Dans un dossier de projet, lance le serveur dans `tmux` :
-   ```bash
-   cd ~/projets/mon-api
-   claude remote-control --spawn worktree
-   ```
-4. Dans l'application, onglet **Code** : la VM apparaît, et tu peux y ouvrir ou créer des sessions.
-
-La VM doit être allumée. Les sessions Remote Control utilisent les mêmes hooks : l'arrêt automatique les prend en compte.
 
 ## Sécurité
 
-- **Aucun port entrant** : SSH et DCV passent par SSM, qui exige tes identifiants AWS.
-- **Contrôle du compte** : chaque action vérifie que le profil pointe sur le compte attendu (`-AccountId`).
-- **IMDSv2 obligatoire**, disque chiffré, rôle IAM limité à SSM et à la licence DCV.
+- **Aucun port entrant** : SSH et le bureau graphique passent par SSM, qui exige tes identifiants AWS.
+- **Contrôle du compte** : chaque action vérifie que les identifiants pointent sur le compte attendu.
+- **IMDSv2 obligatoire**, disque chiffré, rôle IAM de la VM limité à SSM et à la licence DCV.
+- **La clé d'accès AWS** est stockée en clair dans `%USERPROFILE%\.aws\credentials`. Pour la révoquer : console AWS > IAM > Utilisateurs > `devbox-cli` > Identifiants de sécurité.
 - **Une clé SSH par PC.** Pour révoquer un PC :
   ```powershell
   ssh devbox "sed -i '/devbox-NOM-DU-PC$/d' ~/.ssh/authorized_keys"
   ```
-- **Mode Auto ou contournement des permissions** : ne mets pas d'identifiants de production sur la VM.
-- Ne publie jamais de clé ni de fichier d'état : le `.gitignore` les bloque, et active la *push protection* de GitHub.
-
-## Dépannage
-
-| Symptôme | Piste |
-|---|---|
-| `Identifiants refusés` ou session expirée | relance `-Action Start` : le script refait `aws sso login` |
-| Claude Desktop n'arrive pas à se connecter | la VM est-elle allumée ? Teste `ssh -v devbox` dans PowerShell |
-| `InsufficientInstanceCapacity` à la création | réessaie plus tard, ou change de type ou de région |
-| Installation incomplète | journal sur la VM : `sudo tail -n 100 /var/log/devbox-init.log` |
-| La VM s'éteint trop tôt | augmente le délai (`-Action Idle`) ou utilise `devbox-hold` |
-| La VM ne s'éteint jamais | vérifie les hooks (`ls /var/lib/devbox/claude`) et le journal : `journalctl -t devbox` |
-| Bureau DCV injoignable | `ssh devbox "sudo dcv list-sessions"`, puis relance `-Action Dcv` |
+- Ne mets pas d'identifiants de production sur la VM, surtout si Claude y travaille en mode Auto.
+- Ne publie jamais de clé ni de fichier d'état : le `.gitignore` les bloque.
 
 ## Supprimer
 
@@ -239,9 +368,9 @@ La VM doit être allumée. Les sessions Remote Control utilisent les mêmes hook
 .\DevBox.ps1 -Action Remove
 ```
 
-Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le budget, l'entrée SSH et l'état local. La clé SSH du PC est conservée. Pousse ton code sur Git avant.
+Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le budget, l'entrée SSH et l'état local. **Pousse ton code sur Git avant** : le disque est détruit. La clé SSH du PC et l'utilisateur IAM `devbox-cli` sont conservés.
 
-## Paramètres
+## Paramètres du script
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
@@ -252,7 +381,7 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 | `-Region` | `eu-west-1` | région AWS |
 | `-InstanceType` | `m8a.2xlarge` | type d'instance |
 | `-FutureTypes` | `c8a.4xlarge`, `m8a.4xlarge` | types vers lesquels pouvoir basculer plus tard |
-| `-DiskGb` | `100` | taille du disque |
+| `-DiskGb` | `100` | taille du disque en Go |
 | `-DiskThroughput` | `250` | débit du disque en Mo/s |
 | `-IdleMinutes` | `15` | délai d'arrêt après la fin du travail de Claude |
 | `-BudgetUsd` | `150` | budget mensuel de l'alerte |
