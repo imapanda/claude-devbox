@@ -136,11 +136,16 @@ Connecte GitHub sur la VM et récupère un projet :
 
 ```powershell
 ssh devbox
-gh auth login          # suis les instructions : un code à valider dans ton navigateur
+gh auth login -h github.com -p https -w   # affiche un code : ouvre https://github.com/login/device sur ton PC et colle-le
+gh auth setup-git                          # git utilise ce compte pour clone/push
+git config --global user.name  "Ton Nom"
+git config --global user.email "<id>+<ton-compte>@users.noreply.github.com"   # GitHub > Settings > Emails
 mkdir -p ~/projets && cd ~/projets
 git clone https://github.com/<ton-compte>/<ton-projet>.git
 exit
 ```
+
+Le jeton GitHub reste sur le disque de la VM (`~/.config/gh/hosts.yml`) : à faire une seule fois, il survit aux arrêts. Pour le révoquer : `gh auth logout` sur la VM, ou GitHub > Settings > Applications > Authorized OAuth Apps > GitHub CLI.
 
 Dans Claude Desktop, ouvre ensuite une session sur le dossier `~/projets/<ton-projet>`.
 
