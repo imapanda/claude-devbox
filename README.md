@@ -162,13 +162,22 @@ Un fichier doit apparaître : l'arrêt automatique voit bien Claude travailler.
 
 ## Utiliser un autre PC
 
-Sur le nouveau PC : étapes 1 et 3 de l'installation (prérequis et récupération du script), configuration du profil AWS (`aws configure --profile devbox` avec la même clé, ou une clé dédiée), puis :
+Pour piloter la même VM depuis un deuxième PC (un portable, par exemple). Les deux PC partagent la VM : mêmes projets, même Docker, même connexion GitHub. Chacun garde sa propre liste de sessions dans Claude Desktop.
 
-```powershell
-.\DevBox.ps1 -Action Join -AwsProfile devbox -AccountId 123456789012
-```
+1. **Prérequis** : installe Git pour Windows et Claude Desktop (même compte Claude).
+2. **Clé AWS pour ce PC** : dans CloudShell, crée une deuxième clé pour `devbox-cli` :
+   ```bash
+   aws iam create-access-key --user-name devbox-cli --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text
+   ```
+   Une clé par PC permet d'en révoquer un sans toucher à l'autre (deux clés maximum par utilisateur IAM). Tu peux aussi réutiliser celle du premier PC, rangée dans `%USERPROFILE%\.aws\credentials`.
+3. **Script** : récupère-le comme à l'étape 3, puis rattache le PC :
+   ```powershell
+   .\DevBox.ps1 -Action Join -AwsProfile devbox -AccountId 123456789012
+   ```
+   Réponds `2`, colle la clé et le secret, puis `eu-west-1` et `json`. Le script retrouve la VM, la démarre si besoin, crée une **clé SSH propre à ce PC**, l'ajoute sur la VM et configure SSH.
+4. **Claude Desktop** : refais l'étape 5 (relance complète, puis **+ Add SSH connection** `devbox`).
 
-Le script retrouve la VM, la démarre si besoin, crée une **clé SSH propre à ce PC**, l'ajoute sur la VM et configure SSH. Termine par l'étape 5 (Claude Desktop).
+Rien à refaire sur la VM. Les deux PC peuvent être connectés en même temps ; évite seulement de faire travailler deux sessions sur le même dossier (coche **worktree**).
 
 ## Toutes les commandes
 
