@@ -17,6 +17,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
   - [Ajouter un projet](#ajouter-un-projet)
 - [Arrêt automatique](#arrêt-automatique)
 - [Bureau graphique (DCV)](#bureau-graphique-dcv)
+- [Navigateur pour Claude](#navigateur-pour-claude)
 - [Changer la puissance](#changer-la-puissance)
 - [Depuis un téléphone](#depuis-un-téléphone)
 - [Coûts](#coûts)
@@ -290,6 +291,25 @@ Le script démarre la VM si besoin, ouvre un tunnel dans une petite fenêtre sé
 - Ferme la fenêtre du tunnel pour couper le bureau.
 - Le client DCV natif, plus fluide, se connecte à `localhost:18443`.
 
+## Navigateur pour Claude
+
+Pour que Claude ouvre lui-même les pages de tes applications, clique, remplisse des formulaires et prenne des captures d'écran, donne-lui le serveur MCP **Playwright** : un Chromium sans écran, dans un conteneur Docker. À faire une fois :
+
+```powershell
+ssh devbox
+docker pull mcr.microsoft.com/playwright/mcp
+curl -fsSL https://claude.ai/install.sh | bash      # installe la commande claude si elle manque
+~/.local/bin/claude mcp add --scope user playwright -- docker run -i --rm --init --network host mcr.microsoft.com/playwright/mcp
+exit
+```
+
+Puis ouvre une **nouvelle** session dans Claude Desktop (les sessions déjà ouvertes ne voient pas l'outil). `/mcp` doit afficher `playwright` connecté.
+
+- `--network host` : le navigateur atteint les applications de la VM sur `localhost` (par exemple `http://localhost:3000`), y compris les ports publiés par Docker Compose.
+- Disponible dans tous les projets (`--scope user`). Le conteneur ne tourne que pendant les sessions.
+- Demande-le explicitement : « vérifie l'écran de connexion dans le navigateur et fais une capture ».
+- Pour le retirer : `~/.local/bin/claude mcp remove --scope user playwright`.
+
 ## Changer la puissance
 
 ```powershell
@@ -362,6 +382,9 @@ Par GitHub CLI, connecté une seule fois à l'[étape 6](#étape-6--préparer-te
 
 **Comment travailler sur un dépôt précis dans son propre dossier ?**
 Voir [Ajouter un projet](#ajouter-un-projet).
+
+**Claude dit qu'aucun navigateur n'est disponible pour vérifier l'écran.**
+Installe-lui le navigateur Playwright : voir [Navigateur pour Claude](#navigateur-pour-claude).
 
 **Comment voir l'utilisation du CPU et de la RAM ?**
 `ssh -t devbox btop` pour les courbes en direct. Les autres commandes sont dans [Surveiller le CPU et la RAM](#surveiller-le-cpu-et-la-ram-en-direct).
