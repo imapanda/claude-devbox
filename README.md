@@ -14,6 +14,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 - [Toutes les commandes](#toutes-les-commandes)
   - [Surveiller le CPU et la RAM en direct](#surveiller-le-cpu-et-la-ram-en-direct)
 - [Travailler sur plusieurs projets](#travailler-sur-plusieurs-projets)
+  - [Ajouter un projet](#ajouter-un-projet)
 - [Arrêt automatique](#arrêt-automatique)
 - [Bureau graphique (DCV)](#bureau-graphique-dcv)
 - [Changer la puissance](#changer-la-puissance)
@@ -227,6 +228,22 @@ Historique sur plusieurs jours : console AWS > EC2 > Instances > `devbox` > ongl
 
 Une seule connexion `devbox` suffit pour tous les projets.
 
+### Ajouter un projet
+
+Exemple avec le dépôt `mon-orga/mon-projet` (personnel ou d'une organisation) :
+
+```powershell
+.\DevBox.ps1 -Action Start
+ssh devbox "mkdir -p ~/projets && cd ~/projets && gh repo clone mon-orga/mon-projet"
+```
+
+Puis dans Claude Desktop : onglet **Code** > nouvelle session > environnement **devbox** > dossier `/home/ubuntu/projets/mon-projet`. Claude travaille alors uniquement dans ce dossier.
+
+- **Fichier `.env` hors Git** : copie-le depuis le PC avec `scp .\.env devbox:~/projets/mon-projet/`.
+- **« not found » ou 403 sur un dépôt d'organisation** : l'organisation bloque sans doute les applications tierces. Un propriétaire doit autoriser GitHub CLI dans l'organisation > Settings > Third-party access > OAuth app policy.
+
+### Règles pour plusieurs projets
+
 - **Un dossier par projet** sur la VM (`~/projets/mon-api`, `~/projets/mon-site`), chacun avec son dépôt Git.
 - **Une session Claude Desktop par tâche** : chaque session a son dossier et son historique. Elles tournent en parallèle dans la barre latérale, que tu peux filtrer et grouper par projet.
 - **Plusieurs sessions sur le même projet** : coche l'option **worktree** au démarrage de la session. Chacune travaille alors sur sa propre copie Git.
@@ -337,6 +354,18 @@ Non. Les fichiers, les dépôts et l'historique des sessions restent sur le disq
 **Je dois emporter le script partout ?**
 Non : il est sur GitHub. Sur un nouveau PC, clone le dépôt et lance `-Action Join` une fois.
 
+**Je peux l'utiliser depuis mon PC portable en plus du PC fixe ?**
+Oui, voir [Utiliser un autre PC](#utiliser-un-autre-pc). Projets, Docker et GitHub sont partagés ; les sessions Claude Desktop restent propres à chaque PC.
+
+**Comment la VM accède-t-elle à mon GitHub ?**
+Par GitHub CLI, connecté une seule fois à l'[étape 6](#étape-6--préparer-tes-projets-sur-la-vm). Le jeton reste sur le disque de la VM.
+
+**Comment travailler sur un dépôt précis dans son propre dossier ?**
+Voir [Ajouter un projet](#ajouter-un-projet).
+
+**Comment voir l'utilisation du CPU et de la RAM ?**
+`ssh -t devbox btop` pour les courbes en direct. Les autres commandes sont dans [Surveiller le CPU et la RAM](#surveiller-le-cpu-et-la-ram-en-direct).
+
 ## Dépannage
 
 | Symptôme | Que faire |
@@ -391,6 +420,7 @@ Ce que le script crée :
   ```powershell
   ssh devbox "sed -i '/devbox-NOM-DU-PC$/d' ~/.ssh/authorized_keys"
   ```
+- **Le jeton GitHub de la VM** donne à Claude les mêmes droits que toi : cloner, pousser et ouvrir des PR sur tous tes dépôts, y compris ceux de tes organisations. Pour le limiter à quelques dépôts, crée un jeton *fine-grained* restreint (GitHub > Settings > Developer settings) et connecte-le avec `gh auth login --with-token`.
 - Ne mets pas d'identifiants de production sur la VM, surtout si Claude y travaille en mode Auto.
 - Ne publie jamais de clé ni de fichier d'état : le `.gitignore` les bloque.
 
