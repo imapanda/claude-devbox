@@ -383,6 +383,21 @@ function Save-State([hashtable]$Data) {
     $script:State = [pscustomobject]$obj
 }
 
+# Lance une commande interactive directement dans la console (assistant AWS, saisie de mot de passe).
+# L'operateur & ne convient pas : dans une fonction dont la sortie est capturee, PowerShell redirige
+# la sortie du programme et l'AWS CLI refuse alors de demarrer ("No Windows console found").
+function Invoke-Interactive([string]$FilePath, [string[]]$ArgumentList) {
+    $p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -PassThru
+    $null = $p.Handle
+    $p.WaitForExit()
+    return $p.ExitCode
+}
+
+function Set-DcvPassword {
+    $code = Invoke-Interactive 'ssh' @('-t', $Name, 'sudo passwd ubuntu')
+    if ($code -ne 0) { Write-Warning "Mot de passe non change. Reessaie avec : .\DevBox.ps1 -Action Password" }
+}
+
 function Update-SessionPath {
     $extra = @("$env:ProgramFiles\Amazon\AWSCLIV2", "$env:ProgramFiles\Amazon\SessionManagerPlugin\bin")
     foreach ($p in $extra) {
@@ -430,13 +445,13 @@ function Connect-AwsAccount([switch]$ConfirmAccount) {
     if ($profiles -notcontains $AwsProfile) {
         Write-Info "Le profil '$AwsProfile' n'existe pas encore."
         $choice = Read-Host "Type de connexion : [1] IAM Identity Center / SSO (recommande)  [2] Cles d'acces IAM"
-        if ($choice -eq '2') { & aws configure --profile $AwsProfile }
+        if ($choice -eq '2') { $code = Invoke-Interactive 'aws' @('configure', '--profile', $AwsProfile) }
         else {
             Write-Info "Choisis le compte et le role cibles quand l'assistant les propose."
-            & aws configure sso --profile $AwsProfile
+            $code = Invoke-Interactive 'aws' @('configure', 'sso', '--profile', $AwsProfile)
         }
-        if ($LASTEXITCODE -ne 0) { throw 'Configuration du profil annulee.' }
-        & aws configure set region $Region --profile $AwsProfile
+        if ($code -ne 0) { throw 'Configuration du profil annulee.' }
+        Invoke-Aws -Arguments @('configure', 'set', 'region', $Region, '--profile', $AwsProfile) -NoProfile -NoRegion -Raw | Out-Null
     }
 
     $id = Invoke-Aws -Arguments @('sts', 'get-caller-identity') -AllowFail
@@ -447,8 +462,8 @@ function Connect-AwsAccount([switch]$ConfirmAccount) {
             throw "Identifiants refuses pour le profil '$AwsProfile'. Verifie-les : aws configure --profile $AwsProfile"
         }
         Write-Info 'Session SSO absente ou expiree : ouverture du navigateur pour te reconnecter...'
-        & aws sso login --profile $AwsProfile
-        if ($LASTEXITCODE -ne 0) { throw 'Connexion SSO echouee.' }
+        $code = Invoke-Interactive 'aws' @('sso', 'login', '--profile', $AwsProfile)
+        if ($code -ne 0) { throw 'Connexion SSO echouee.' }
         $id = Invoke-Aws -Arguments @('sts', 'get-caller-identity')
     }
 
@@ -764,7 +779,7 @@ function New-DevBox {
 
     Write-Step 'Mot de passe du bureau DCV (utilisateur ubuntu)'
     Write-Info 'Choisis un mot de passe solide : il protege le bureau graphique.'
-    & ssh -t $Name 'sudo passwd ubuntu'
+    Set-DcvPassword
 
     Initialize-Budget $account
 
@@ -972,7 +987,7 @@ try {
         'Stop'     { Stop-DevBox }
         'Status'   { Show-Status }
         'Dcv'      { Open-Dcv }
-        'Password' { Start-DevBox -Quiet; & ssh -t $Name 'sudo passwd ubuntu' }
+        'Password' { Start-DevBox -Quiet; Set-DcvPassword }
         'Resize'   { Set-DevBoxType }
         'Idle'     { Set-IdleDelay }
         'Remove'   { Remove-DevBox }
