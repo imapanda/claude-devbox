@@ -114,7 +114,7 @@ Chaque PC a sa propre clé, nommée `devbox-<NOM-DU-PC>`, ce qui permet d'en ré
 |---|---|
 | `.\DevBox.ps1` | état de la VM |
 | `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte si la session SSO a expiré) |
-| `.\DevBox.ps1 -Action Stop` | arrête la VM |
+| `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
 | `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
 | `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau DCV |
 | `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la taille de la VM |
@@ -164,6 +164,7 @@ Des *hooks* Claude Code installés sur la VM notent l'état de chaque session. U
 | Build ou tests qui chargent le CPU | reste allumée |
 | Session Claude Desktop ouverte mais inactive | **arrêt** |
 
+- Pour éteindre tout de suite depuis la VM (terminal, ou en demandant à Claude dans une session) : `devbox-off`. Variantes : `devbox-off 10` (dans 10 minutes), `devbox-off cancel`. La session Claude Desktop se coupe à l'arrêt.
 - Délai par défaut : 15 minutes. À la création : `-IdleMinutes 30`. Après coup : `-Action Idle -IdleMinutes 30`.
 - Pour travailler sans Claude (terminal, outils), suspends l'arrêt sur la VM : `devbox-hold 2h`, puis `devbox-hold off`.
 - Une boucle garde la VM allumée tant que deux itérations sont espacées de moins de 2 heures.

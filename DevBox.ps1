@@ -235,7 +235,20 @@ echo "Pas d'arret automatique avant $(date -d "@$until" +%H:%M)"
 EOF
 chmod 755 /usr/local/bin/devbox-hold
 
-# 3. Verification chaque minute
+# 3. Arret manuel depuis la VM (terminal, ou Claude dans une session)
+cat > /usr/local/bin/devbox-off <<'EOF'
+#!/bin/bash
+# Eteint la VM : devbox-off (tout de suite) | devbox-off 10 (dans 10 min) | devbox-off cancel
+case "${1:-now}" in
+  now) logger -t devbox "Arret manuel demande"; echo "Arret de la VM..."; sudo /sbin/shutdown -h now ;;
+  cancel) sudo /sbin/shutdown -c && echo "Arret annule" ;;
+  *[!0-9]*) echo "Usage : devbox-off | devbox-off 10 | devbox-off cancel"; exit 1 ;;
+  *) sudo /sbin/shutdown -h "+$1" && echo "Arret prevu dans $1 min (devbox-off cancel pour annuler)" ;;
+esac
+EOF
+chmod 755 /usr/local/bin/devbox-off
+
+# 4. Verification chaque minute
 cat > /usr/local/bin/devbox-idle-check <<'EOF'
 #!/bin/bash
 # Eteint la VM quand Claude a fini de travailler depuis LIMIT minutes,
@@ -849,7 +862,9 @@ function Stop-DevBox {
     Write-Step 'Arret de la machine'
     Invoke-Aws -Arguments @('ec2', 'stop-instances', '--instance-ids', $id) | Out-Null
     Invoke-Aws -Arguments @('ec2', 'wait', 'instance-stopped', '--instance-ids', $id) -Raw | Out-Null
-    Write-Ok 'Machine arretee : seul le disque reste facture'
+    $final = Get-InstanceState $id
+    if ($final -ne 'stopped') { throw "La VM n'est pas arretee (etat AWS : $final). Relance -Action Stop ou verifie dans la console AWS." }
+    Write-Ok "Etat confirme par AWS : $final. Seul le disque reste facture."
 }
 
 function Show-Status {
