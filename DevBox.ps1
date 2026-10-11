@@ -320,6 +320,12 @@ systemctl enable --now devbox-idle.timer
 # Navigateur dans le bureau (facultatif)
 snap install firefox || true
 
+# Claude Code en ligne de commande + navigateur Playwright utilisable par Claude (facultatif)
+sudo -u ubuntu -H bash -c 'curl -fsSL https://claude.ai/install.sh | bash' || true
+docker pull mcr.microsoft.com/playwright/mcp || true
+sudo -u ubuntu -H /home/ubuntu/.local/bin/claude mcp add --scope user playwright -- \
+  docker run -i --rm --init --network host mcr.microsoft.com/playwright/mcp || true
+
 mkdir -p /var/lib/devbox
 touch /var/lib/devbox/ready
 echo "DevBox prete"

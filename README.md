@@ -293,7 +293,11 @@ Le script démarre la VM si besoin, ouvre un tunnel dans une petite fenêtre sé
 
 ## Navigateur pour Claude
 
-Pour que Claude ouvre lui-même les pages de tes applications, clique, remplisse des formulaires et prenne des captures d'écran, donne-lui le serveur MCP **Playwright** : un Chromium sans écran, dans un conteneur Docker. À faire une fois :
+Claude dispose du serveur MCP **Playwright** : un Chromium sans écran, dans un conteneur Docker. Il ouvre lui-même les pages de tes applications, clique, remplit des formulaires et prend des captures d'écran.
+
+**Rien à lancer** : Claude démarre le navigateur à chaque nouvelle session et l'arrête à la fin. La configuration est sur le disque de la VM, elle survit aux arrêts et redémarrages.
+
+**VM créée avec une version du script antérieure à l'ajout de Playwright** : installe-le une fois.
 
 ```powershell
 ssh devbox
@@ -303,7 +307,9 @@ curl -fsSL https://claude.ai/install.sh | bash      # installe la commande claud
 exit
 ```
 
-Puis ouvre une **nouvelle** session dans Claude Desktop (les sessions déjà ouvertes ne voient pas l'outil). `/mcp` doit afficher `playwright` connecté.
+L'avertissement « ~/.local/bin is not in your PATH » de l'installeur peut être ignoré : à la connexion suivante, Ubuntu ajoute ce dossier tout seul et la commande `claude` fonctionne.
+
+Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà ouvertes ne voient pas l'outil). `/mcp` doit afficher `playwright` connecté.
 
 - `--network host` : le navigateur atteint les applications de la VM sur `localhost` (par exemple `http://localhost:3000`), y compris les ports publiés par Docker Compose.
 - Disponible dans tous les projets (`--scope user`). Le conteneur ne tourne que pendant les sessions.
@@ -331,9 +337,8 @@ Pour décider, regarde `htop` sur la VM pendant une grosse session : processeur 
 Le script ne l'automatise pas encore. Pour piloter la VM depuis l'application Claude (iPhone, Android) ou depuis claude.ai/code :
 
 1. Sur les plans Team et Enterprise, un Owner active **Remote Control** dans les réglages admin de Claude Code.
-2. Sur la VM, installe Claude Code en ligne de commande et connecte-toi :
+2. Sur la VM, connecte Claude Code en ligne de commande (déjà installé sur les VM récentes, sinon `curl -fsSL https://claude.ai/install.sh | bash`) :
    ```bash
-   curl -fsSL https://claude.ai/install.sh | bash
    claude   # puis /login
    ```
 3. Dans un dossier de projet, lance le serveur dans `tmux` :
@@ -429,7 +434,7 @@ Ce que le script crée :
 | Disque | gp3 chiffré, 100 Go, débit 250 Mo/s |
 | Rôle IAM de la VM | SSM et licence DCV uniquement |
 | Groupe de sécurité | aucune règle entrante |
-| Logiciels | Docker et Compose, Git, GitHub CLI, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
+| Logiciels | Docker et Compose, Git, GitHub CLI, Claude Code en ligne de commande, navigateur Playwright pour Claude, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
 | Sur le PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
 | Budget (option) | alerte e-mail à 80 % du budget mensuel (réel) et à 100 % (prévision) |
 
