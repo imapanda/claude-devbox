@@ -212,11 +212,16 @@ Depuis PowerShell sur le PC, VM allumée :
 
 | Pour voir | Commande | Pour quitter |
 |---|---|---|
+| **Courbes** CPU et RAM, réseau, disque, processus | `ssh -t devbox btop` | `q` |
 | CPU par cœur, RAM et processus | `ssh -t devbox htop` | `q` |
 | CPU et RAM de chaque conteneur Docker | `ssh -t devbox docker stats` | `Ctrl+C` |
 | Un relevé ponctuel | `ssh devbox "free -h; uptime"` | (rien à faire) |
 
 Ouvre-les dans un deuxième onglet du Terminal Windows pendant que Claude travaille. Ils n'empêchent pas l'arrêt automatique.
+
+VM créée avant l'ajout de `btop` : installe-le une fois avec `ssh devbox "sudo apt-get install -y btop"`.
+
+Historique sur plusieurs jours : console AWS > EC2 > Instances > `devbox` > onglet **Surveillance** (courbe CPU uniquement, la RAM n'y figure pas).
 
 ## Travailler sur plusieurs projets
 
@@ -372,7 +377,7 @@ Ce que le script crée :
 | Disque | gp3 chiffré, 100 Go, débit 250 Mo/s |
 | Rôle IAM de la VM | SSM et licence DCV uniquement |
 | Groupe de sécurité | aucune règle entrante |
-| Logiciels | Docker et Compose, Git, GitHub CLI, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
+| Logiciels | Docker et Compose, Git, GitHub CLI, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
 | Sur le PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
 | Budget (option) | alerte e-mail à 80 % du budget mensuel (réel) et à 100 % (prévision) |
 

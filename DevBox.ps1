@@ -113,7 +113,7 @@ chmod 600 /home/ubuntu/.ssh/authorized_keys
 # Systeme, outils de dev, Docker
 $APT update
 $APT upgrade
-$APT install git gh curl wget unzip zip jq htop tmux build-essential ca-certificates gnupg psmisc \
+$APT install git gh curl wget unzip zip jq htop btop tmux build-essential ca-certificates gnupg psmisc \
   docker.io docker-compose-v2 docker-buildx
 usermod -aG docker ubuntu
 systemctl enable --now docker
