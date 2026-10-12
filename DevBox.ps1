@@ -362,10 +362,11 @@ function Invoke-Aws {
     $code = $LASTEXITCODE
 
     $stdout = ($out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join "`n"
-    $stderr = ($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"
+    $stderr = ($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { $_.Exception.Message } | Where-Object { $_ -match '\S' }) -join "`n"
     if ($code -ne 0) {
         if ($AllowFail) { return $null }
-        throw "aws $($Arguments[0..1] -join ' ') a echoue : $stderr"
+        throw "aws $($Arguments[0..1] -join ' ') a echoue (code $code) : $($stderr.Trim())"
     }
     if ($Raw) { return $stdout.Trim() }
     if ([string]::IsNullOrWhiteSpace($stdout)) { return $null }
@@ -633,17 +634,46 @@ function Remove-SshConfig {
     [IO.File]::WriteAllText($SshConfigPath, $cleaned.TrimStart(), (New-Object System.Text.UTF8Encoding $false))
 }
 
+function ConvertTo-Date([string]$Text) {
+    try { return [DateTimeOffset]::Parse($Text.Trim(), [Globalization.CultureInfo]::InvariantCulture) } catch { return $null }
+}
+
 function Wait-Ssm([string]$InstanceId, [int]$TimeoutSec = 600) {
     Write-Info "Attente de l'agent SSM..."
+    # Juste apres un demarrage, AWS peut encore afficher "Online" pour la session precedente :
+    # on exige un contact de l'agent posterieur au dernier demarrage de la VM.
+    $launch = Invoke-Aws -Arguments @('ec2', 'describe-instances', '--instance-ids', $InstanceId,
+        '--query', 'Reservations[0].Instances[0].LaunchTime', '--output', 'text') -Raw -AllowFail
+    $since = if ($launch) { ConvertTo-Date $launch } else { $null }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $ping = Invoke-Aws -Arguments @('ssm', 'describe-instance-information',
+        $info = Invoke-Aws -Arguments @('ssm', 'describe-instance-information',
             '--filters', "Key=InstanceIds,Values=$InstanceId",
-            '--query', 'InstanceInformationList[0].PingStatus', '--output', 'text') -Raw -AllowFail
-        if ($ping -eq 'Online') { Write-Ok 'Agent SSM en ligne'; return }
+            '--query', 'InstanceInformationList[0].[PingStatus,LastPingDateTime]', '--output', 'text') -Raw -AllowFail
+        $parts = @("$info".Trim() -split '\s+')
+        if ($parts[0] -eq 'Online') {
+            $ping = if ($parts.Count -gt 1) { ConvertTo-Date $parts[1] } else { $null }
+            if (-not $since -or -not $ping -or $ping -ge $since) { Write-Ok 'Agent SSM en ligne'; return }
+        }
         Start-Sleep -Seconds 10
     }
     throw "L'agent SSM ne repond pas apres $TimeoutSec s."
+}
+
+function Wait-SsmCommand([string]$CommandId, [string]$InstanceId, [int]$TimeoutSec = 300) {
+    # get-command-invocation renvoie une erreur tant que la commande n'est pas enregistree :
+    # on reessaie jusqu'a obtenir un statut final.
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $status = 'introuvable'
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $s = Invoke-Aws -Arguments @('ssm', 'get-command-invocation', '--command-id', $CommandId, '--instance-id', $InstanceId,
+            '--query', 'Status', '--output', 'text') -Raw -AllowFail
+        if (-not $s) { continue }
+        $status = $s
+        if ($status -notin @('Pending', 'InProgress', 'Delayed')) { return $status }
+    }
+    return "$status apres $TimeoutSec s"
 }
 
 function Wait-Ssh([int]$TimeoutSec = 600) {
@@ -841,10 +871,8 @@ function Add-AuthorizedKey([string]$InstanceId, [string]$PubKey) {
         '--document-name', 'AWS-RunShellScript', '--comment', "DevBox Join $env:COMPUTERNAME",
         '--parameters', (Write-TempJson 'join.json' $params),
         '--query', 'Command.CommandId', '--output', 'text') -Raw
-    Invoke-Aws -Arguments @('ssm', 'wait', 'command-executed', '--command-id', $commandId, '--instance-id', $InstanceId) -Raw -AllowFail | Out-Null
-    $status = Invoke-Aws -Arguments @('ssm', 'get-command-invocation', '--command-id', $commandId, '--instance-id', $InstanceId,
-        '--query', 'Status', '--output', 'text') -Raw
-    if ($status -ne 'Success') { throw "Ajout de la cle sur la VM en echec (statut : $status)." }
+    $status = Wait-SsmCommand $commandId $InstanceId
+    if ($status -ne 'Success') { throw "Ajout de la cle sur la VM en echec (statut : $status). Relance la meme commande." }
 }
 
 function Join-DevBox {
