@@ -326,11 +326,19 @@ La VM s'arrête, change de type et redémarre en quelques minutes.
 
 | Type | Cœurs · Mémoire | Prix indicatif | Quand le choisir |
 |---|---|---|---|
+| `c8a.2xlarge` | 8 · 16 Go | ~0,46 $/h | mêmes cœurs, RAM peu utilisée : moins cher |
 | `m8a.2xlarge` | 8 · 32 Go | ~0,54 $/h | par défaut |
 | `c8a.4xlarge` | 16 · 32 Go | ~0,93 $/h | builds et tests plus rapides |
 | `m8a.4xlarge` | 16 · 64 Go | ~1,09 $/h | beaucoup de conteneurs |
 
-Pour décider, regarde `htop` sur la VM pendant une grosse session : processeur à 100 % pendant les builds, prends `c8a.4xlarge` ; mémoire saturée, prends `m8a.4xlarge`.
+Chez AWS, la mémoire suit le nombre de cœurs : 2 Go par cœur en `c`, 4 Go en `m`. Il n'existe pas de taille intermédiaire (12 cœurs) : plus de 8 cœurs, c'est 16.
+
+Pour décider, regarde `btop` sur la VM pendant une grosse session (prix Irlande, à la demande) :
+- **tous les cœurs à 100 % pendant les builds** : `c8a.4xlarge` ;
+- **cœurs pas saturés** : plus de cœurs n'accélérera rien ; si la RAM reste sous 12 Go, `c8a.2xlarge` coûte moins cher pour la même vitesse ;
+- **mémoire saturée** : `m8a.4xlarge`.
+
+Tu peux changer dans les deux sens à tout moment : rien n'est perdu, seules les sessions ouvertes sont coupées pendant le redémarrage.
 
 ## Depuis un téléphone
 
