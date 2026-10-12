@@ -322,7 +322,7 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
 .\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge
 ```
 
-La VM s'arrête, change de type et redémarre en quelques minutes.
+La VM s'arrête, change de type et redémarre en quelques minutes. Prix à la demande en Irlande :
 
 | Type | Cœurs · Mémoire | Prix indicatif | Quand le choisir |
 |---|---|---|---|
@@ -333,7 +333,7 @@ La VM s'arrête, change de type et redémarre en quelques minutes.
 
 Chez AWS, la mémoire suit le nombre de cœurs : 2 Go par cœur en `c`, 4 Go en `m`. Il n'existe pas de taille intermédiaire (12 cœurs) : plus de 8 cœurs, c'est 16.
 
-Pour décider, regarde `btop` sur la VM pendant une grosse session (prix Irlande, à la demande) :
+Pour décider, regarde `btop` sur la VM pendant une grosse session :
 - **tous les cœurs à 100 % pendant les builds** : `c8a.4xlarge` ;
 - **cœurs pas saturés** : plus de cœurs n'accélérera rien ; si la RAM reste sous 12 Go, `c8a.2xlarge` coûte moins cher pour la même vitesse ;
 - **mémoire saturée** : `m8a.4xlarge`.
