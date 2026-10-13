@@ -11,6 +11,7 @@
       Start     Demarre la machine (et reconnecte le compte AWS si la session SSO a expire).
       Stop      Arrete la machine (seul le disque reste facture).
       Status    Affiche l'etat de la machine.
+      Cost      Cout du mois en cours : estimation a jour (heures allumee x tarif) et montant facture par AWS.
       Dcv       Demarre si besoin, ouvre le tunnel DCV et le bureau dans le navigateur.
       OpenCode  Demarre si besoin, installe OpenCode 2 sur la VM (serveur en service), ouvre le tunnel
                 et donne le lien de connexion pour l'application OpenCode (ou le navigateur).
@@ -43,7 +44,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Create', 'Join', 'Start', 'Stop', 'Status', 'Dcv', 'OpenCode', 'Password', 'Resize', 'Idle', 'Remove')]
+    [ValidateSet('Create', 'Join', 'Start', 'Stop', 'Status', 'Cost', 'Dcv', 'OpenCode', 'Password', 'Resize', 'Idle', 'Remove')]
     [string]$Action = 'Status',
     [string]$Name = 'devbox',
     [string]$AwsProfile = 'devbox',
@@ -977,6 +978,85 @@ function Stop-DevBox {
     Write-Ok "Etat confirme par AWS : $final. Seul le disque reste facture."
 }
 
+# Tarifs a la demande eu-west-1 (USD/h), pour l'estimation de -Action Cost.
+$HourlyUsd = @{ 'c8a.2xlarge' = 0.4625; 'm8a.2xlarge' = 0.54; 'c8a.4xlarge' = 0.925; 'm8a.4xlarge' = 1.09 }
+
+function Show-Cost {
+    $id = Get-InstanceIdOrThrow
+    $info = Invoke-Aws -Arguments @('ec2', 'describe-instances', '--instance-ids', $id, '--query',
+        'Reservations[0].Instances[0].{Type:InstanceType,State:State.Name,Launch:LaunchTime,Mon:Monitoring.State}')
+    $vol = Invoke-Aws -Arguments @('ec2', 'describe-volumes', '--filters', "Name=attachment.instance-id,Values=$id",
+        '--query', 'Volumes[0].{Size:Size,Thr:Throughput}') -AllowFail
+    $now = [DateTime]::UtcNow
+    $monthStart = New-Object DateTime ($now.Year, $now.Month, 1, 0, 0, 0, [DateTimeKind]::Utc)
+    $daysInMonth = [DateTime]::DaysInMonth($now.Year, $now.Month)
+    $rate = $HourlyUsd[[string]$info.Type]
+    $fmt = { param($v) '{0:N2} $' -f $v }
+
+    Write-Step "Couts de la VM $Name ($($info.Type)) depuis le $($monthStart.ToString('dd/MM'))"
+
+    # Heures allumee : CloudWatch publie un point CPU toutes les 5 min (1 min en surveillance detaillee)
+    # tant que la VM tourne. Donnee a jour a ~10 min pres, y compris VM eteinte.
+    $stats = Invoke-Aws -Arguments @('cloudwatch', 'get-metric-statistics', '--namespace', 'AWS/EC2', '--metric-name', 'CPUUtilization',
+        '--dimensions', "Name=InstanceId,Value=$id", '--start-time', $monthStart.ToString('yyyy-MM-ddTHH:mm:ssZ'),
+        '--end-time', $now.ToString('yyyy-MM-ddTHH:mm:ssZ'), '--period', '86400', '--statistics', 'SampleCount') -AllowFail
+    if ($null -eq $stats) {
+        Write-Warning "Lecture CloudWatch refusee : ajoute la permission (README, section 'Suivre les couts')."
+        $hours = $null
+    }
+    else {
+        $perHour = if ($info.Mon -eq 'enabled') { 60 } else { 12 }
+        $samples = 0
+        foreach ($d in @($stats.Datapoints)) { $samples += [double]$d.SampleCount }
+        $hours = $samples / $perHour
+    }
+
+    $total = 0.0
+    if ($null -ne $hours) {
+        Write-Ok ("Heures allumee ce mois   : {0:N1} h" -f $hours)
+        if ($rate) {
+            $vm = $hours * $rate
+            $ip = $hours * 0.005
+            $total += $vm + $ip
+            Write-Ok ("Instance ({0} $/h)    : {1}" -f $rate, (& $fmt $vm))
+            Write-Ok ("IPv4 publique            : {0}" -f (& $fmt $ip))
+        }
+        else {
+            Write-Info "Tarif de $($info.Type) inconnu du script : estimation de l'instance non calculee."
+        }
+    }
+    if ($vol) {
+        $diskMonth = 0.088 * [double]$vol.Size + 0.044 * [Math]::Max(0, [double]$vol.Thr - 125)
+        $disk = $diskMonth * (($now - $monthStart).TotalDays / $daysInMonth)
+        $total += $disk
+        Write-Ok ("Disque ({0} Go, prorata) : {1}  ({2}/mois)" -f $vol.Size, (& $fmt $disk), (& $fmt $diskMonth))
+    }
+    if ($total -gt 0) { Write-Host ("    Total estime            : {0}" -f (& $fmt $total)) -ForegroundColor Green }
+
+    if ($info.State -eq 'running' -and $info.Launch) {
+        $since = ConvertTo-Date ([string]$info.Launch)
+        if ($since) {
+            $h = ([DateTimeOffset]::UtcNow - $since).TotalHours
+            $cost = if ($rate) { ' (~' + (& $fmt ($h * ($rate + 0.005))) + ')' } else { '' }
+            Write-Info ("Allumee depuis {0:N1} h{1}" -f $h, $cost)
+        }
+    }
+
+    # Montant reellement facture (tout le compte AWS), avec 24 h de decalage. 0,01 $ par appel.
+    $end = $now.AddDays(1).ToString('yyyy-MM-dd')
+    $ce = Invoke-Aws -Arguments @('ce', 'get-cost-and-usage', '--time-period', "Start=$($monthStart.ToString('yyyy-MM-dd')),End=$end",
+        '--granularity', 'MONTHLY', '--metrics', 'UnblendedCost') -RegionOverride 'us-east-1' -AllowFail
+    if ($ce -and $ce.ResultsByTime) {
+        $billed = 0.0
+        foreach ($r in @($ce.ResultsByTime)) { $billed += [double]::Parse([string]$r.Total.UnblendedCost.Amount, [Globalization.CultureInfo]::InvariantCulture) }
+        Write-Ok ("Facture par AWS (compte entier, decalage ~24 h) : {0}" -f (& $fmt $billed))
+    }
+    else {
+        Write-Info "Montant facture indisponible (permission ce:GetCostAndUsage, ou Cost Explorer pas encore active sur le compte)."
+    }
+    Write-Info "Estimation sur le tarif actuel ; le budget AWS envoie aussi une alerte par e-mail si tu l'as configure."
+}
+
 function Show-Status {
     $id = Get-InstanceIdOrThrow
     $info = Invoke-Aws -Arguments @('ec2', 'describe-instances', '--instance-ids', $id,
@@ -1194,6 +1274,7 @@ try {
         'Start'    { Start-DevBox }
         'Stop'     { Stop-DevBox }
         'Status'   { Show-Status }
+        'Cost'     { Show-Cost }
         'Dcv'      { Open-Dcv }
         'OpenCode' { Open-OpenCode }
         'Password' { Start-DevBox -Quiet; Set-DcvPassword }

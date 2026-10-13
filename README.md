@@ -22,6 +22,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 - [Changer la puissance](#changer-la-puissance)
 - [Depuis un téléphone](#depuis-un-téléphone)
 - [Coûts](#coûts)
+  - [Suivre les coûts](#suivre-les-coûts)
 - [Questions fréquentes](#questions-fréquentes)
 - [Dépannage](#dépannage)
 - [Comment ça marche](#comment-ça-marche)
@@ -60,6 +61,7 @@ Ensuite, dans n'importe quelle fenêtre PowerShell :
 | `devbox start` | `.\DevBox.ps1 -Action Start` |
 | `devbox stop` | `.\DevBox.ps1 -Action Stop` |
 | `devbox` | `.\DevBox.ps1` (état de la VM) |
+| `devbox cost` | `.\DevBox.ps1 -Action Cost` |
 | `devbox dcv` | `.\DevBox.ps1 -Action Dcv` |
 | `devbox opencode` | `.\DevBox.ps1 -Action OpenCode` |
 
@@ -93,7 +95,7 @@ cat > devbox-policy.json <<EOF
   "Version": "2012-10-17",
   "Statement": [
     { "Sid": "Ec2SsmBudgets", "Effect": "Allow",
-      "Action": ["ec2:*", "ssm:*", "budgets:*"], "Resource": "*" },
+      "Action": ["ec2:*", "ssm:*", "budgets:*", "cloudwatch:GetMetricStatistics", "ce:GetCostAndUsage"], "Resource": "*" },
     { "Sid": "RoleDevbox", "Effect": "Allow",
       "Action": ["iam:GetRole", "iam:CreateRole", "iam:DeleteRole", "iam:TagRole",
                  "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy",
@@ -211,6 +213,7 @@ Rien à refaire sur la VM. Les deux PC peuvent être connectés en même temps ;
 | Commande | Effet |
 |---|---|
 | `.\DevBox.ps1` | affiche l'état de la VM |
+| `.\DevBox.ps1 -Action Cost` | coût du mois en cours (estimation à jour + montant facturé) |
 | `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte à AWS si besoin) |
 | `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
 | `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
@@ -446,6 +449,35 @@ Prix à la demande en Irlande (`eu-west-1`), relevés en octobre 2026. Vérifie 
 
 Une VM éteinte ne coûte que son disque.
 
+### Suivre les coûts
+
+```powershell
+devbox cost
+```
+
+```
+==> Couts de la VM devbox (m8a.2xlarge) depuis le 01/10
+    Heures allumee ce mois   : 15,0 h
+    Instance (0,54 $/h)      : 8,10 $
+    IPv4 publique            : 0,07 $
+    Disque (100 Go, prorata) : 5,89 $  (14,30 $/mois)
+    Total estime             : 14,07 $
+    Allumee depuis 0,7 h (~0,36 $)
+    Facture par AWS (compte entier, decalage ~24 h) : 23,46 $
+```
+
+- **Estimation à jour** (à ~10 min près, même VM éteinte) : heures allumée ce mois, lues dans CloudWatch, multipliées par le tarif du type actuel, plus le disque au prorata.
+- **Montant facturé** : le vrai montant de Cost Explorer pour tout le compte AWS, avec environ 24 h de retard (0,01 $ par consultation). La première fois, ouvre Cost Explorer dans la console AWS pour l'activer.
+- L'**alerte budget** par e-mail reste le filet de sécurité.
+
+Utilisateur `devbox-cli` créé avant cette fonction : ajoute-lui les deux permissions de lecture, dans CloudShell :
+
+```bash
+aws iam put-user-policy --user-name devbox-cli --policy-name devbox-cost --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudwatch:GetMetricStatistics","ce:GetCostAndUsage"],"Resource":"*"}]}'
+```
+
+Coûts des modèles d'IA : Claude Code passe par ton abonnement (pas de facturation à l'usage). OpenCode avec une clé d'API facture chaque appel : le détail est dans la console de ton fournisseur.
+
 ## Questions fréquentes
 
 **Comment démarrer la VM ?**
@@ -551,7 +583,7 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| `-Action` | `Status` | `Create`, `Join`, `Start`, `Stop`, `Status`, `Dcv`, `OpenCode`, `Password`, `Resize`, `Idle`, `Remove` |
+| `-Action` | `Status` | `Create`, `Join`, `Start`, `Stop`, `Status`, `Cost`, `Dcv`, `OpenCode`, `Password`, `Resize`, `Idle`, `Remove` |
 | `-Name` | `devbox` | nom de la VM, de l'hôte SSH et des ressources AWS |
 | `-AwsProfile` | `devbox` | profil AWS CLI |
 | `-AccountId` | | ID du compte AWS attendu (12 chiffres) |
