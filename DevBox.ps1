@@ -937,7 +937,19 @@ function Stop-DevBox {
     if ($s -eq 'stopped') { Write-Ok 'Machine deja arretee'; return }
     Write-Step 'Arret de la machine'
     Invoke-Aws -Arguments @('ec2', 'stop-instances', '--instance-ids', $id) | Out-Null
-    Invoke-Aws -Arguments @('ec2', 'wait', 'instance-stopped', '--instance-ids', $id) -Raw | Out-Null
+    # Un systeme fige ignore l'arret normal : on force au bout de 3 minutes.
+    $forceAt = (Get-Date).AddSeconds(180)
+    $deadline = (Get-Date).AddSeconds(900)
+    $forced = $false
+    while ((Get-Date) -lt $deadline) {
+        if ((Get-InstanceState $id) -eq 'stopped') { break }
+        if (-not $forced -and (Get-Date) -ge $forceAt) {
+            Write-Info "Pas d'arret apres 3 min (systeme fige ?) : arret force."
+            Invoke-Aws -Arguments @('ec2', 'stop-instances', '--instance-ids', $id, '--force') | Out-Null
+            $forced = $true
+        }
+        Start-Sleep -Seconds 10
+    }
     $final = Get-InstanceState $id
     if ($final -ne 'stopped') { throw "La VM n'est pas arretee (etat AWS : $final). Relance -Action Stop ou verifie dans la console AWS." }
     Write-Ok "Etat confirme par AWS : $final. Seul le disque reste facture."
