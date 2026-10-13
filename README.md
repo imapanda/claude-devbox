@@ -455,48 +455,48 @@ Une VM éteinte ne coûte que son disque.
 devbox cost
 ```
 
-```
-==> Couts de la VM devbox (m8a.2xlarge) depuis le 01/10
-    Heures allumee ce mois   : 15,0 h
-    Instance (0,54 $/h)      : 8,10 $
-    IPv4 publique            : 0,07 $
-    Disque (100 Go, prorata) : 5,89 $  (14,30 $/mois)
-    Total estime             : 14,07 $
-    Allumee depuis 0,7 h (~0,36 $)
-    Facture par AWS (compte entier, decalage ~24 h) : 23,46 $
-```
+Quatre blocs, du plus frais au plus complet :
 
-- **Estimation à jour** (à ~10 min près, même VM éteinte) : heures allumée ce mois, lues dans CloudWatch, multipliées par le tarif du type actuel, plus le disque au prorata.
-- **Montant facturé** : le vrai montant de Cost Explorer pour tout le compte AWS, avec environ 24 h de retard (0,01 $ par consultation). La première fois, ouvre Cost Explorer dans la console AWS pour l'activer.
-- L'**alerte budget** par e-mail reste le filet de sécurité.
-
-Utilisateur `devbox-cli` créé avant cette fonction : ajoute-lui les deux permissions de lecture, dans CloudShell :
-
-```bash
-aws iam put-user-policy --user-name devbox-cli --policy-name devbox-cost --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudwatch:GetMetricStatistics","ce:GetCostAndUsage"],"Resource":"*"}]}'
-```
-
-**Azure** (par exemple les modèles utilisés par OpenCode via Azure AI Foundry ou Azure OpenAI) : `devbox cost` affiche aussi le coût du mois de ton abonnement Azure, par service. À configurer une fois :
-
-```powershell
-.\DevBox.ps1 -Action Cost -AzureSubscription "<nom ou ID de l'abonnement>"
-# option : limiter à un groupe de ressources
-.\DevBox.ps1 -Action Cost -AzureSubscription "<nom ou ID>" -AzureResourceGroup "<groupe>"
-```
-
-- L'abonnement (et le groupe) sont mémorisés : ensuite, `devbox cost` suffit.
-- Le script installe Azure CLI si besoin et ouvre le navigateur pour te connecter (`az login`) la première fois.
-- Il faut le rôle **Lecteur de gestion des coûts** (Cost Management Reader) ou **Lecteur** sur l'abonnement.
-- Montant réel de Cost Management, avec quelques heures de décalage (jusqu'à ~24 h), dans la devise de facturation.
+| Bloc | Contenu | Fraîcheur |
+|---|---|---|
+| VM AWS | heures allumée ce mois × tarif, IPv4, disque au prorata, session en cours | ~10 min, même VM éteinte |
+| Facture AWS par service | montant réel de Cost Explorer, services d'IA marqués **[IA]** (Bedrock et modèles Bedrock) et total « dont IA » | ~24 h |
+| IA via OpenCode | coût et jetons par modèle calculés par OpenCode, tous fournisseurs confondus (Azure, AWS, Anthropic…) | temps réel (VM allumée) |
+| Facture Azure par service | montant réel de Cost Management, services d'IA marqués **[IA]** (Foundry, OpenAI…) et total « dont IA » | quelques heures |
 
 ```
-==> Couts Azure du mois (Abonnement perso)
-    Foundry Models                          12,35 EUR
-    Azure OpenAI                             3,10 EUR
-    Total Azure                             15,45 EUR
+==> Facture AWS du mois, par service (decalage ~24 h)
+    Claude Sonnet 4.5 (Amazon Bedrock Edition)      12,40 $  [IA]
+    Amazon Elastic Compute Cloud - Compute           8,10 $
+    Total AWS                                       27,20 $
+      dont IA                                       13,20 $
+
+==> IA via OpenCode, ce mois (temps reel, tous fournisseurs)
+    Sessions 12   Messages 340   Cost $18.42
+      azure/gpt-5                  $11.20   1.2M in / 240K out
+      anthropic/claude-sonnet-4-5   $7.22   800K in / 90K out
+
+==> Facture Azure du mois, par service (Abonnement perso)
+    Foundry Models                                  12,35 EUR  [IA]
+    Total Azure                                     15,87 EUR
+      dont IA                                       15,45 EUR
 ```
 
-Claude Code passe par ton abonnement Claude : pas de facturation à l'usage.
+Le bloc OpenCode est le seul en temps réel pour l'IA : les factures AWS et Azure arrivent avec quelques heures de retard. Claude Code passe par ton abonnement Claude : pas de facturation à l'usage.
+
+**Mise en place, une fois :**
+
+1. AWS : ouvre **Cost Explorer** dans la console pour l'activer. Si `devbox-cli` a été créé avant cette fonction, ajoute-lui les permissions de lecture dans CloudShell :
+   ```bash
+   aws iam put-user-policy --user-name devbox-cli --policy-name devbox-cost --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudwatch:GetMetricStatistics","ce:GetCostAndUsage"],"Resource":"*"}]}'
+   ```
+2. Azure : indique l'abonnement (et, en option, le groupe de ressources), mémorisés ensuite :
+   ```powershell
+   .\DevBox.ps1 -Action Cost -AzureSubscription "<nom ou ID>" [-AzureResourceGroup "<groupe>"]
+   ```
+   Le script installe Azure CLI si besoin et ouvre le navigateur pour `az login`. Il faut le rôle **Lecteur de gestion des coûts** (Cost Management Reader) ou **Lecteur** sur l'abonnement.
+
+Chaque consultation de Cost Explorer coûte 0,01 $. L'alerte budget par e-mail reste le filet de sécurité.
 
 ## Questions fréquentes
 

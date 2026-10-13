@@ -984,6 +984,39 @@ function Stop-DevBox {
 # Tarifs a la demande eu-west-1 (USD/h), pour l'estimation de -Action Cost.
 $HourlyUsd = @{ 'c8a.2xlarge' = 0.4625; 'm8a.2xlarge' = 0.54; 'c8a.4xlarge' = 0.925; 'm8a.4xlarge' = 1.09 }
 
+# Services comptes comme "IA" dans les couts factures.
+$AiServicePatternAws   = 'Bedrock|SageMaker|Comprehend|Textract|Rekognition|Transcribe|Polly|Translate|Kendra|Amazon Q|Claude|Anthropic|Llama|Mistral|Titan|Nova|Cohere|DeepSeek'
+$AiServicePatternAzure = 'OpenAI|Foundry|Cognitive|Azure AI|Machine Learning|Models|Speech|Language|Vision|Document Intelligence|Bot Service'
+
+function Write-CostLines($Lines, [string]$Currency, [string]$AiPattern, [string]$Label) {
+    $Lines = @($Lines | Where-Object { $_.Cost -ge 0.005 })
+    if ($Lines.Count -eq 0) { Write-Ok 'Aucun cout ce mois-ci'; return }
+    foreach ($l in ($Lines | Sort-Object Cost -Descending | Select-Object -First 10)) {
+        $tag = if ($l.Service -match $AiPattern) { '  [IA]' } else { '' }
+        Write-Ok ("{0,-40} {1,10:N2} {2}{3}" -f $l.Service, $l.Cost, $Currency, $tag)
+    }
+    $ai = ($Lines | Where-Object { $_.Service -match $AiPattern } | Measure-Object Cost -Sum).Sum
+    $all = ($Lines | Measure-Object Cost -Sum).Sum
+    Write-Host ("    {0,-40} {1,10:N2} {2}" -f "Total $Label", $all, $Currency) -ForegroundColor Green
+    Write-Host ("    {0,-40} {1,10:N2} {2}" -f "  dont IA", [double]$ai, $Currency) -ForegroundColor Cyan
+}
+
+function Show-OpenCodeUsage([bool]$VmRunning, [datetime]$Now) {
+    Write-Step 'IA via OpenCode, ce mois (temps reel, tous fournisseurs)'
+    if (-not $VmRunning) { Write-Info 'VM eteinte : statistiques OpenCode lues a la prochaine execution VM allumee.'; return }
+    $days = $Now.Day - 1
+    $log = Join-Path $TmpDir 'ssh-stats.log'
+    $prevEnc = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        $out = @(& ssh -E $log $Name "test -x ~/.opencode/bin/opencode && ~/.opencode/bin/opencode stats --cost --models --days $days 2>/dev/null")
+    }
+    finally { [Console]::OutputEncoding = $prevEnc }
+    if ($out.Count -eq 0) { Write-Info "OpenCode non installe sur la VM (devbox opencode), ou aucune donnee."; return }
+    foreach ($line in $out) { Write-Host "    $line" }
+    Write-Info "Cout calcule par OpenCode a partir des jetons consommes et des tarifs publics des modeles."
+}
+
 function Show-Cost {
     $id = Get-InstanceIdOrThrow
     $info = Invoke-Aws -Arguments @('ec2', 'describe-instances', '--instance-ids', $id, '--query',
@@ -1045,20 +1078,29 @@ function Show-Cost {
         }
     }
 
-    # Montant reellement facture (tout le compte AWS), avec 24 h de decalage. 0,01 $ par appel.
+    Write-Info "Estimation sur le tarif actuel du type de VM."
+
+    # Montant reellement facture (tout le compte AWS) par service, avec ~24 h de decalage. 0,01 $ par appel.
+    Write-Step 'Facture AWS du mois, par service (decalage ~24 h)'
     $end = $now.AddDays(1).ToString('yyyy-MM-dd')
     $ce = Invoke-Aws -Arguments @('ce', 'get-cost-and-usage', '--time-period', "Start=$($monthStart.ToString('yyyy-MM-dd')),End=$end",
-        '--granularity', 'MONTHLY', '--metrics', 'UnblendedCost') -RegionOverride 'us-east-1' -AllowFail
+        '--granularity', 'MONTHLY', '--metrics', 'UnblendedCost', '--group-by', 'Type=DIMENSION,Key=SERVICE') -RegionOverride 'us-east-1' -AllowFail
     if ($ce -and $ce.ResultsByTime) {
-        $billed = 0.0
-        foreach ($r in @($ce.ResultsByTime)) { $billed += [double]::Parse([string]$r.Total.UnblendedCost.Amount, [Globalization.CultureInfo]::InvariantCulture) }
-        Write-Ok ("Facture par AWS (compte entier, decalage ~24 h) : {0}" -f (& $fmt $billed))
+        $lines = @(foreach ($r in @($ce.ResultsByTime)) {
+            foreach ($g in @($r.Groups)) {
+                [pscustomobject]@{
+                    Service = [string]@($g.Keys)[0]
+                    Cost    = [double]::Parse([string]$g.Metrics.UnblendedCost.Amount, [Globalization.CultureInfo]::InvariantCulture)
+                }
+            }
+        })
+        Write-CostLines $lines '$' $AiServicePatternAws 'AWS'
     }
     else {
-        Write-Info "Montant facture indisponible (permission ce:GetCostAndUsage, ou Cost Explorer pas encore active sur le compte)."
+        Write-Info "Indisponible (permission ce:GetCostAndUsage, ou Cost Explorer pas encore active sur le compte)."
     }
-    Write-Info "Estimation sur le tarif actuel ; le budget AWS envoie aussi une alerte par e-mail si tu l'as configure."
 
+    Show-OpenCodeUsage ($info.State -eq 'running') $now
     Show-AzureCost
 }
 
@@ -1113,7 +1155,7 @@ function Show-AzureCost {
     $scope = "/subscriptions/$($acc.id)"
     $label = [string]$acc.name
     if ($rg) { $scope += "/resourceGroups/$rg"; $label += " / $rg" }
-    Write-Step "Couts Azure du mois ($label)"
+    Write-Step "Facture Azure du mois, par service ($label, decalage de quelques heures)"
 
     # Cost Management : montant reel, avec quelques heures de decalage (jusqu'a ~24 h).
     $body = @{
@@ -1142,13 +1184,8 @@ function Show-AzureCost {
             Currency = if ($iCur -ge 0) { [string]$row[$iCur] } else { '' }
         }
     })
-    if ($lines.Count -eq 0) { Write-Ok 'Aucun cout ce mois-ci'; return }
-    $cur = $lines[0].Currency
-    foreach ($l in ($lines | Sort-Object Cost -Descending | Select-Object -First 8)) {
-        Write-Ok ("{0,-34} {1,10:N2} {2}" -f $l.Service, $l.Cost, $l.Currency)
-    }
-    $sum = ($lines | Measure-Object Cost -Sum).Sum
-    Write-Host ("    {0,-34} {1,10:N2} {2}" -f 'Total Azure', $sum, $cur) -ForegroundColor Green
+    $cur = if ($lines.Count -gt 0) { $lines[0].Currency } else { '' }
+    Write-CostLines $lines $cur $AiServicePatternAzure 'Azure'
 }
 
 function Show-Status {
