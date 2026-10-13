@@ -18,6 +18,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 - [Arrêt automatique](#arrêt-automatique)
 - [Bureau graphique (DCV)](#bureau-graphique-dcv)
 - [Navigateur pour Claude](#navigateur-pour-claude)
+- [opencode](#opencode)
 - [Changer la puissance](#changer-la-puissance)
 - [Depuis un téléphone](#depuis-un-téléphone)
 - [Coûts](#coûts)
@@ -60,6 +61,7 @@ Ensuite, dans n'importe quelle fenêtre PowerShell :
 | `devbox stop` | `.\DevBox.ps1 -Action Stop` |
 | `devbox` | `.\DevBox.ps1` (état de la VM) |
 | `devbox dcv` | `.\DevBox.ps1 -Action Dcv` |
+| `devbox opencode -Project mon-api` | `.\DevBox.ps1 -Action OpenCode -Project mon-api` |
 
 Les autres paramètres s'ajoutent comme d'habitude : `devbox resize -InstanceType c8a.4xlarge`. À refaire sur chaque PC.
 
@@ -212,6 +214,7 @@ Rien à refaire sur la VM. Les deux PC peuvent être connectés en même temps ;
 | `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte à AWS si besoin) |
 | `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
 | `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
+| `.\DevBox.ps1 -Action OpenCode -Project mon-api` | ouvre opencode sur la VM, dans `~/projets/mon-api` |
 | `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau graphique |
 | `.\DevBox.ps1 -Action Idle -IdleMinutes 30` | change le délai d'arrêt automatique |
 | `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la puissance de la VM |
@@ -301,6 +304,7 @@ La VM s'éteint quand **Claude a fini de travailler** depuis 15 minutes. Une vé
 | Claude attend ta validation depuis plus de 15 min | **s'éteint** |
 | Une boucle `/loop` tourne | reste allumée |
 | Bureau graphique connecté | reste allumée |
+| `opencode attach` ouvert sur un PC | reste allumée |
 | Build ou tests qui font travailler le processeur | reste allumée |
 | Session Claude Desktop ouverte mais inactive | **s'éteint** |
 | `devbox-hold` actif | reste allumée |
@@ -349,6 +353,27 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
 - Disponible dans tous les projets (`--scope user`). Le conteneur ne tourne que pendant les sessions.
 - Demande-le explicitement : « vérifie l'écran de connexion dans le navigateur et fais une capture ».
 - Pour le retirer : `~/.local/bin/claude mcp remove --scope user playwright`.
+
+## opencode
+
+[opencode](https://opencode.ai) peut tourner sur la VM à côté de Claude Code : le serveur (`opencode serve`) sur la VM, l'interface (`opencode attach`) dans le terminal du PC.
+
+```powershell
+.\DevBox.ps1 -Action OpenCode -Project mon-api
+```
+
+Le script fait tout, la première fois comme les suivantes :
+- démarre la VM si besoin ;
+- installe opencode sur la VM et le service `opencode-serve` (écoute uniquement sur la VM, port 4096, joignable par le tunnel SSM) ;
+- télécharge sur le PC le client Windows **de la même version** que le serveur ;
+- ouvre un tunnel et lance `opencode attach` dans `~/projets/mon-api` (sans `-Project` : `~/projets`).
+
+Au premier lancement, tape `/connect` dans opencode pour choisir ton fournisseur de modèles : les identifiants sont enregistrés sur la VM, donc valables depuis tous tes PC.
+
+- Tant que `opencode attach` est ouvert, la VM ne s'éteint pas (comme le bureau DCV). Ferme-le quand tu as fini.
+- Quand tu le quittes, le tunnel se ferme mais le serveur continue : tu peux reprendre la session depuis un autre PC.
+- Un travail long d'opencode, fenêtre fermée, n'est vu par l'arrêt automatique que s'il occupe le CPU : sinon, `ssh devbox devbox-hold 2h`.
+- Journal du serveur : `ssh devbox "journalctl -u opencode-serve -n 50 --no-pager"`.
 
 ## Changer la puissance
 
@@ -479,7 +504,7 @@ Ce que le script crée :
 | Disque | gp3 chiffré, 100 Go, débit 250 Mo/s |
 | Rôle IAM de la VM | SSM et licence DCV uniquement |
 | Groupe de sécurité | aucune règle entrante |
-| Logiciels | Docker et Compose, Git, GitHub CLI, Claude Code en ligne de commande, navigateur Playwright pour Claude, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
+| Logiciels | Docker et Compose, Git, GitHub CLI, Claude Code en ligne de commande, opencode (au premier `-Action OpenCode`), navigateur Playwright pour Claude, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
 | Sur le PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
 | Budget (option) | alerte e-mail à 80 % du budget mensuel (réel) et à 100 % (prévision) |
 
@@ -509,7 +534,7 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| `-Action` | `Status` | `Create`, `Join`, `Start`, `Stop`, `Status`, `Dcv`, `Password`, `Resize`, `Idle`, `Remove` |
+| `-Action` | `Status` | `Create`, `Join`, `Start`, `Stop`, `Status`, `Dcv`, `OpenCode`, `Password`, `Resize`, `Idle`, `Remove` |
 | `-Name` | `devbox` | nom de la VM, de l'hôte SSH et des ressources AWS |
 | `-AwsProfile` | `devbox` | profil AWS CLI |
 | `-AccountId` | | ID du compte AWS attendu (12 chiffres) |
@@ -521,6 +546,7 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 | `-IdleMinutes` | `15` | délai d'arrêt après la fin du travail de Claude |
 | `-BudgetUsd` | `150` | budget mensuel de l'alerte |
 | `-BudgetEmail` | | e-mail de l'alerte budget |
+| `-Project` | | dossier sous `~/projets` ouvert par `-Action OpenCode` |
 
 ## Licence
 
