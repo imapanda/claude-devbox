@@ -1285,6 +1285,7 @@ fi
 for i in $(seq 1 30); do curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && break; sleep 1; done
 curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && echo "SERVER_OK"
 echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+echo "PASSWORD=$(jq -r '.password // empty' "$HOME/.config/opencode/service.json" 2>/dev/null)"
 echo "PAIR=$("$OC" pair 2>/dev/null | grep -oE 'http://127\.0\.0\.1:[0-9]+/auth/connect/[A-Za-z0-9_-]+' | head -n 1)"
 '@
     $setup = ($setup -replace "`r", '') -replace '__PORT__', $OpenCodePort
@@ -1325,6 +1326,18 @@ echo "PAIR=$("$OC" pair 2>/dev/null | grep -oE 'http://127\.0\.0\.1:[0-9]+/auth/
   Ensuite       : ouvre simplement l'application, elle se reconnecte (30 jours).
   Sans l'app    : colle le lien dans ton navigateur (interface web).
   Fin           : ferme l'application puis la fenetre du tunnel.
+"@
+    }
+    $srvPassword = if ($text -match 'PASSWORD=(\S+)') { $Matches[1] } else { $null }
+    if ($srvPassword) {
+        Write-Host @"
+
+Connexion manuelle (si l'application demande les champs du serveur, accueil : Ctrl+B) :
+  Nom         : $Name
+  Serveur     : http://127.0.0.1:$OpenCodeLocalPort
+  Utilisateur : opencode
+  Mot de passe: $srvPassword
+  Dossier     : /home/ubuntu/projets
 "@
     }
     else {

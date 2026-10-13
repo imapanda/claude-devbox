@@ -370,6 +370,7 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
    ```
    Le script démarre la VM si besoin, installe OpenCode 2 sur la VM (serveur en service, démarré avec la VM, mot de passe généré par OpenCode, joignable seulement par le tunnel), ouvre le tunnel dans une **fenêtre séparée à laisser ouverte**, et copie un **lien de connexion** dans le presse-papiers.
 3. Dans l'application OpenCode, colle le lien dans l'adresse du serveur. Le lien ne sert qu'une fois et expire au bout de 5 minutes : relance `devbox opencode` pour en avoir un nouveau.
+   Si l'application demande plutôt les champs d'un serveur (accueil : `Ctrl+B`), le script les affiche aussi : serveur `http://127.0.0.1:14374`, utilisateur `opencode`, mot de passe généré sur la VM, dossier `/home/ubuntu/projets`.
 4. Configure ton fournisseur de modèles dans l'application : les identifiants restent sur la VM.
 
 ### Ensuite
