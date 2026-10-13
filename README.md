@@ -476,7 +476,27 @@ Utilisateur `devbox-cli` créé avant cette fonction : ajoute-lui les deux permi
 aws iam put-user-policy --user-name devbox-cli --policy-name devbox-cost --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudwatch:GetMetricStatistics","ce:GetCostAndUsage"],"Resource":"*"}]}'
 ```
 
-Coûts des modèles d'IA : Claude Code passe par ton abonnement (pas de facturation à l'usage). OpenCode avec une clé d'API facture chaque appel : le détail est dans la console de ton fournisseur.
+**Azure** (par exemple les modèles utilisés par OpenCode via Azure AI Foundry ou Azure OpenAI) : `devbox cost` affiche aussi le coût du mois de ton abonnement Azure, par service. À configurer une fois :
+
+```powershell
+.\DevBox.ps1 -Action Cost -AzureSubscription "<nom ou ID de l'abonnement>"
+# option : limiter à un groupe de ressources
+.\DevBox.ps1 -Action Cost -AzureSubscription "<nom ou ID>" -AzureResourceGroup "<groupe>"
+```
+
+- L'abonnement (et le groupe) sont mémorisés : ensuite, `devbox cost` suffit.
+- Le script installe Azure CLI si besoin et ouvre le navigateur pour te connecter (`az login`) la première fois.
+- Il faut le rôle **Lecteur de gestion des coûts** (Cost Management Reader) ou **Lecteur** sur l'abonnement.
+- Montant réel de Cost Management, avec quelques heures de décalage (jusqu'à ~24 h), dans la devise de facturation.
+
+```
+==> Couts Azure du mois (Abonnement perso)
+    Foundry Models                          12,35 EUR
+    Azure OpenAI                             3,10 EUR
+    Total Azure                             15,45 EUR
+```
+
+Claude Code passe par ton abonnement Claude : pas de facturation à l'usage.
 
 ## Questions fréquentes
 
@@ -595,6 +615,8 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 | `-IdleMinutes` | `15` | délai d'arrêt après la fin du travail de Claude |
 | `-BudgetUsd` | `150` | budget mensuel de l'alerte |
 | `-BudgetEmail` | | e-mail de l'alerte budget |
+| `-AzureSubscription` | | abonnement Azure lu par `-Action Cost` (mémorisé) |
+| `-AzureResourceGroup` | | groupe de ressources Azure à isoler (mémorisé) |
 
 ## Licence
 

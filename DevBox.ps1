@@ -11,7 +11,8 @@
       Start     Demarre la machine (et reconnecte le compte AWS si la session SSO a expire).
       Stop      Arrete la machine (seul le disque reste facture).
       Status    Affiche l'etat de la machine.
-      Cost      Cout du mois en cours : estimation a jour (heures allumee x tarif) et montant facture par AWS.
+      Cost      Cout du mois en cours : VM AWS (estimation a jour + montant facture) et, si configure,
+                abonnement Azure (-AzureSubscription, -AzureResourceGroup : memorises apres le premier appel).
       Dcv       Demarre si besoin, ouvre le tunnel DCV et le bureau dans le navigateur.
       OpenCode  Demarre si besoin, installe OpenCode 2 sur la VM (serveur en service), ouvre le tunnel
                 et donne le lien de connexion pour l'application OpenCode (ou le navigateur).
@@ -58,7 +59,9 @@ param(
     [ValidateRange(1, 1440)]
     [int]$IdleMinutes = 15,
     [int]$BudgetUsd = 150,
-    [string]$BudgetEmail
+    [string]$BudgetEmail,
+    [string]$AzureSubscription,
+    [string]$AzureResourceGroup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1055,6 +1058,97 @@ function Show-Cost {
         Write-Info "Montant facture indisponible (permission ce:GetCostAndUsage, ou Cost Explorer pas encore active sur le compte)."
     }
     Write-Info "Estimation sur le tarif actuel ; le budget AWS envoie aussi une alerte par e-mail si tu l'as configure."
+
+    Show-AzureCost
+}
+
+function Invoke-Az([string[]]$Arguments, [switch]$AllowFail) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $out = & az @Arguments --only-show-errors -o json 2>&1 } finally { $ErrorActionPreference = $prev }
+    $code = $LASTEXITCODE
+    $stdout = ($out | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join "`n"
+    $stderr = ($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { $_.Exception.Message } | Where-Object { $_ -match '\S' }) -join "`n"
+    if ($code -ne 0) {
+        if ($AllowFail) { return $null }
+        throw "az $($Arguments[0..1] -join ' ') a echoue : $stderr"
+    }
+    if ([string]::IsNullOrWhiteSpace($stdout)) { return $null }
+    return ($stdout | ConvertFrom-Json)
+}
+
+function Connect-Azure {
+    $wbin = "$env:ProgramFiles\Microsoft SDKs\Azure\CLI2\wbin"
+    if (-not (Get-Command az -ErrorAction SilentlyContinue) -and (Test-Path $wbin)) { $env:Path += ";$wbin" }
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        Write-Info 'Azure CLI absente, installation via winget...'
+        winget install -e --id Microsoft.AzureCLI --accept-source-agreements --accept-package-agreements
+        if (Test-Path $wbin) { $env:Path += ";$wbin" }
+        if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+            throw 'Azure CLI introuvable. Installe-la (https://aka.ms/installazurecliwindows) puis relance.'
+        }
+    }
+    if (-not (Invoke-Az @('account', 'show') -AllowFail)) {
+        Write-Info 'Connexion a Azure (navigateur)...'
+        $az = (Get-Command az -CommandType Application | Select-Object -First 1).Source
+        if ((Invoke-Interactive $az @('login', '--only-show-errors', '-o', 'none')) -ne 0) { throw 'Connexion Azure echouee.' }
+    }
+}
+
+function Show-AzureCost {
+    $sub = if ($AzureSubscription) { $AzureSubscription } elseif ($State -and $State.AzureSubscription) { [string]$State.AzureSubscription } else { $null }
+    $rg = if ($AzureResourceGroup) { $AzureResourceGroup } elseif ($State -and $State.AzureResourceGroup) { [string]$State.AzureResourceGroup } else { $null }
+    if (-not $sub) {
+        Write-Info 'Azure : non configure. Une fois : .\DevBox.ps1 -Action Cost -AzureSubscription <nom ou ID> [-AzureResourceGroup <groupe>]'
+        return
+    }
+    Connect-Azure
+    $acc = Invoke-Az @('account', 'show', '--subscription', $sub) -AllowFail
+    if (-not $acc) { Write-Warning "Abonnement Azure '$sub' introuvable pour ce compte (liste : az account list -o table)."; return }
+    $save = @{ AzureSubscription = [string]$acc.id }
+    if ($rg) { $save.AzureResourceGroup = $rg }
+    Save-State $save
+
+    $scope = "/subscriptions/$($acc.id)"
+    $label = [string]$acc.name
+    if ($rg) { $scope += "/resourceGroups/$rg"; $label += " / $rg" }
+    Write-Step "Couts Azure du mois ($label)"
+
+    # Cost Management : montant reel, avec quelques heures de decalage (jusqu'a ~24 h).
+    $body = @{
+        type      = 'ActualCost'
+        timeframe = 'MonthToDate'
+        dataset   = @{
+            granularity = 'None'
+            aggregation = @{ totalCost = @{ name = 'Cost'; 'function' = 'Sum' } }
+            grouping    = @(@{ type = 'Dimension'; name = 'ServiceName' })
+        }
+    }
+    $file = (Write-TempJson 'azure-cost.json' $body) -replace '^file://', ''
+    $res = Invoke-Az @('rest', '--method', 'post',
+        '--url', "https://management.azure.com$scope/providers/Microsoft.CostManagement/query?api-version=2023-11-01",
+        '--body', "@$file") -AllowFail
+    if (-not $res) { Write-Warning "Lecture des couts Azure refusee : il faut le role 'Lecteur de gestion des couts' (Cost Management Reader) sur $label."; return }
+
+    $cols = @($res.properties.columns | ForEach-Object { [string]$_.name })
+    $iCost = [Array]::IndexOf($cols, 'Cost'); if ($iCost -lt 0) { $iCost = [Array]::IndexOf($cols, 'PreTaxCost') }
+    $iSvc = [Array]::IndexOf($cols, 'ServiceName')
+    $iCur = [Array]::IndexOf($cols, 'Currency')
+    $lines = @(foreach ($row in @($res.properties.rows)) {
+        [pscustomobject]@{
+            Service  = if ($iSvc -ge 0) { [string]$row[$iSvc] } else { 'Total' }
+            Cost     = [double]$row[$iCost]
+            Currency = if ($iCur -ge 0) { [string]$row[$iCur] } else { '' }
+        }
+    })
+    if ($lines.Count -eq 0) { Write-Ok 'Aucun cout ce mois-ci'; return }
+    $cur = $lines[0].Currency
+    foreach ($l in ($lines | Sort-Object Cost -Descending | Select-Object -First 8)) {
+        Write-Ok ("{0,-34} {1,10:N2} {2}" -f $l.Service, $l.Cost, $l.Currency)
+    }
+    $sum = ($lines | Measure-Object Cost -Sum).Sum
+    Write-Host ("    {0,-34} {1,10:N2} {2}" -f 'Total Azure', $sum, $cur) -ForegroundColor Green
 }
 
 function Show-Status {
