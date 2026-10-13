@@ -42,6 +42,27 @@ Pour savoir où elle en est : `.\DevBox.ps1` (sans paramètre) affiche son état
 
 Claude Desktop ne démarre pas la VM tout seul : lance toujours l'étape 1 avant d'ouvrir une session.
 
+### Raccourci `devbox` (recommandé)
+
+Pour lancer le script depuis n'importe quel dossier, sans te soucier de l'endroit où le dépôt est cloné sur chaque PC, exécute une fois **depuis le dossier du dépôt** :
+
+```powershell
+if (!(Test-Path $PROFILE)) { New-Item -ItemType File -Force $PROFILE | Out-Null }
+Add-Content $PROFILE "function devbox { & '$PWD\DevBox.ps1' @args }"
+. $PROFILE
+```
+
+Ensuite, dans n'importe quelle fenêtre PowerShell :
+
+| Commande | Équivaut à |
+|---|---|
+| `devbox start` | `.\DevBox.ps1 -Action Start` |
+| `devbox stop` | `.\DevBox.ps1 -Action Stop` |
+| `devbox` | `.\DevBox.ps1` (état de la VM) |
+| `devbox dcv` | `.\DevBox.ps1 -Action Dcv` |
+
+Les autres paramètres s'ajoutent comme d'habitude : `devbox resize -InstanceType c8a.4xlarge`. À refaire sur chaque PC.
+
 ## Installation (une seule fois)
 
 Compte 30 minutes, dont 15 d'attente pendant que la VM s'installe.
@@ -414,6 +435,8 @@ Installe-lui le navigateur Playwright : voir [Navigateur pour Claude](#navigateu
 | La VM s'éteint trop tôt | Augmente le délai (`-Action Idle -IdleMinutes 30`) ou utilise `devbox-hold 2h` |
 | La VM ne s'éteint jamais | `ssh devbox "ls /var/lib/devbox/claude; journalctl -t devbox"` |
 | Bureau graphique injoignable | `ssh devbox "sudo dcv list-sessions"`, puis relance `-Action Dcv` |
+| Caractères parasites (graphiques de `btop`) dans PowerShell | La VM s'est éteinte pendant que `btop` tournait, le terminal n'a pas été remis en état : tape `cls`, ou ferme l'onglet |
+| `cd` : chemin introuvable | Le dépôt n'est pas au même endroit sur chaque PC : utilise le [raccourci `devbox`](#raccourci-devbox-recommandé) |
 
 ## Comment ça marche
 
