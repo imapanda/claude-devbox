@@ -695,16 +695,20 @@ function Wait-Ssh([int]$TimeoutSec = 600) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $nextHint = (Get-Date).AddSeconds(120)
     $lastErr = '(aucune)'
+    # Les erreurs de ssh vont dans un fichier (-E) plutot que dans un tube : les processus du tunnel SSM
+    # heritent de stderr, et PowerShell attendrait leur fin avant de rendre la main.
+    $log = Join-Path $TmpDir 'ssh-wait.log'
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         while ((Get-Date) -lt $deadline) {
-            $out = & ssh -o ConnectTimeout=20 -o BatchMode=yes $Name 'true' 2>&1
+            Remove-Item $log -Force -ErrorAction SilentlyContinue
+            & ssh -E $log -o ConnectTimeout=20 -o BatchMode=yes $Name 'true' | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Ok 'SSH operationnel'; return }
-            $msg = @($out | ForEach-Object {
-                    if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
-                } | Where-Object { $_ -match '\S' })
-            if ($msg.Count -gt 0) { $lastErr = $msg[-1].Trim() }
+            if (Test-Path $log) {
+                $msg = @(Get-Content $log | Where-Object { $_ -match '\S' })
+                if ($msg.Count -gt 0) { $lastErr = $msg[-1].Trim() }
+            }
             if ((Get-Date) -ge $nextHint) {
                 Write-Info "Toujours en attente. Derniere erreur SSH : $lastErr"
                 $hint = Get-SshHint
