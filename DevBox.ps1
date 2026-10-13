@@ -676,20 +676,47 @@ function Wait-SsmCommand([string]$CommandId, [string]$InstanceId, [int]$TimeoutS
     return "$status apres $TimeoutSec s"
 }
 
+function Get-SshHint {
+    # Explique un blocage SSH a partir de l'etat de l'agent SSM de la VM.
+    $id = if ($State -and $State.InstanceId) { [string]$State.InstanceId } else { $null }
+    if (-not $id) { return '' }
+    $ping = Invoke-Aws -Arguments @('ssm', 'describe-instance-information', '--filters', "Key=InstanceIds,Values=$id",
+        '--query', 'InstanceInformationList[0].PingStatus', '--output', 'text') -Raw -AllowFail
+    if ($ping -eq 'Online') {
+        return ("Agent SSM en ligne. Si l'erreur parle de 'publickey' : relance -Action Join sur ce PC. " +
+                "Sinon, verifie que le reseau (proxy, inspection SSL) laisse passer ssm.$Region.amazonaws.com et ssmmessages.$Region.amazonaws.com.")
+    }
+    return ("Agent SSM injoignable (etat : $ping) : la VM est sans doute saturee ou figee. " +
+            "Redemarre-la : .\DevBox.ps1 -Action Stop puis .\DevBox.ps1 -Action Start")
+}
+
 function Wait-Ssh([int]$TimeoutSec = 600) {
     Write-Info 'Attente de la connexion SSH...'
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $nextHint = (Get-Date).AddSeconds(120)
+    $lastErr = '(aucune)'
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         while ((Get-Date) -lt $deadline) {
-            & ssh -o ConnectTimeout=20 -o BatchMode=yes $Name 'true' 2>$null
+            $out = & ssh -o ConnectTimeout=20 -o BatchMode=yes $Name 'true' 2>&1
             if ($LASTEXITCODE -eq 0) { Write-Ok 'SSH operationnel'; return }
+            $msg = @($out | ForEach-Object {
+                    if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" }
+                } | Where-Object { $_ -match '\S' })
+            if ($msg.Count -gt 0) { $lastErr = $msg[-1].Trim() }
+            if ((Get-Date) -ge $nextHint) {
+                Write-Info "Toujours en attente. Derniere erreur SSH : $lastErr"
+                $hint = Get-SshHint
+                if ($hint) { Write-Info $hint }
+                Write-Info 'Ctrl+C pour abandonner.'
+                $nextHint = (Get-Date).AddSeconds(120)
+            }
             Start-Sleep -Seconds 10
         }
     }
     finally { $ErrorActionPreference = $prev }
-    throw "Connexion SSH impossible apres $TimeoutSec s. Diagnostic : ssh -v $Name"
+    throw "Connexion SSH impossible apres $TimeoutSec s. Derniere erreur : $lastErr`n$(Get-SshHint)`nDiagnostic detaille : ssh -v $Name exit"
 }
 
 function Initialize-Budget([string]$Account) {

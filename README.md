@@ -427,6 +427,7 @@ Installe-lui le navigateur Playwright : voir [Navigateur pour Claude](#navigateu
 
 | Symptôme | Que faire |
 |---|---|
+| Bloqué sur « Attente de la connexion SSH... » | Au bout de 2 min, le script affiche la dernière erreur et l'état de l'agent SSM. **Agent injoignable** : VM saturée ou figée, fais `-Action Stop` puis `-Action Start`. **Agent en ligne** + `publickey` : relance `-Action Join` sur ce PC. **Agent en ligne** sans autre erreur : le réseau (proxy, inspection SSL) bloque `ssmmessages.eu-west-1.amazonaws.com` ; teste en partage de connexion 4G |
 | Claude Desktop n'arrive pas à se connecter | La VM est-elle allumée (`.\DevBox.ps1`) ? Claude Desktop a-t-il été relancé après l'installation ? Teste `ssh -v devbox exit` dans PowerShell |
 | `aws` introuvable | Ferme et rouvre PowerShell, puis relance la commande |
 | `Identifiants refusés` | Vérifie la clé : `aws sts get-caller-identity --profile devbox` |
