@@ -12,8 +12,8 @@
       Stop      Arrete la machine (seul le disque reste facture).
       Status    Affiche l'etat de la machine.
       Dcv       Demarre si besoin, ouvre le tunnel DCV et le bureau dans le navigateur.
-      OpenCode  Demarre si besoin, installe/lance opencode serve sur la VM et l'ouvre sur le PC
-                (opencode attach) dans ~/projets/<Project> ; sans -Project, menu des projets.
+      OpenCode  Demarre si besoin, installe OpenCode 2 sur la VM (serveur en service), ouvre le tunnel
+                et donne le lien de connexion pour l'application OpenCode (ou le navigateur).
       Password  Change le mot de passe du bureau DCV (utilisateur ubuntu).
       Resize    Change le type d'instance (ex. -InstanceType c8a.4xlarge).
       Idle      Change le delai d'arret automatique (ex. -IdleMinutes 60).
@@ -35,7 +35,7 @@
 .EXAMPLE
     .\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge
 .EXAMPLE
-    .\DevBox.ps1 -Action OpenCode -Project mon-api
+    .\DevBox.ps1 -Action OpenCode
 
 .NOTES
     Si Windows bloque le script : Unblock-File .\DevBox.ps1
@@ -57,8 +57,7 @@ param(
     [ValidateRange(1, 1440)]
     [int]$IdleMinutes = 15,
     [int]$BudgetUsd = 150,
-    [string]$BudgetEmail,
-    [string]$Project
+    [string]$BudgetEmail
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,8 +77,8 @@ $RoleName       = "$Name-ec2-role"
 $SgName         = "$Name-sg"
 $BudgetName     = "$Name-ec2"
 $DcvLocalPort   = 18443
-$OpenCodePort      = 4096
-$OpenCodeLocalPort = 14096
+$OpenCodePort      = 49374   # port par defaut d'OpenCode 2 sur la VM
+$OpenCodeLocalPort = 14374   # port local du tunnel
 
 New-Item -ItemType Directory -Force -Path $StateDir, $TmpDir, $SshDir | Out-Null
 
@@ -259,7 +258,7 @@ chmod 755 /usr/local/bin/devbox-off
 cat > /usr/local/bin/devbox-idle-check <<'EOF'
 #!/bin/bash
 # Eteint la VM quand Claude a fini de travailler depuis LIMIT minutes,
-# sauf boucle /loop active, bureau DCV ou opencode attach ouvert, charge CPU ou devbox-hold.
+# sauf boucle /loop active, bureau DCV ou application OpenCode connectee, charge CPU ou devbox-hold.
 LIMIT=__IDLE_MINUTES__
 LOOP_GRACE=120     # une boucle garde la VM allumee si elle a tourne il y a moins de 120 min
 BUSY_MAX=90        # une session "occupee" sans nouvelle depuis 90 min est consideree bloquee
@@ -285,7 +284,7 @@ for f in "$DIR"/*; do
   [ "$ts" -gt "$last" ] && last=$ts
 done
 
-ss -Htn state established '( sport = :8443 or sport = :4096 )' | grep -q . && active
+ss -Htn state established '( sport = :8443 or sport = :49374 )' | grep -q . && active
 awk '{ exit !($1 > 1.0) }' /proc/loadavg && active
 
 echo "$last" > "$LAST"
@@ -1018,135 +1017,107 @@ function Wait-LocalPort([int]$Port, [int]$TimeoutSec = 60) {
     return $false
 }
 
-function Stop-OpenCodeTunnel {
-    Get-CimInstance Win32_Process -Filter "Name = 'aws.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "localPortNumber=$OpenCodeLocalPort" } |
-        ForEach-Object { Start-Process taskkill -ArgumentList '/PID', $_.ProcessId, '/T', '/F' -WindowStyle Hidden -Wait }
-}
-
-function Get-OpenCodeClient([string]$Version) {
-    # Client Windows de la meme version que le serveur de la VM, telecharge une fois depuis GitHub.
-    $dir = Join-Path $env:LOCALAPPDATA "devbox\opencode\$Version"
-    $found = Get-ChildItem $dir -Recurse -Filter 'opencode.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) { return $found.FullName }
-    Write-Info "Telechargement d'opencode $Version pour Windows..."
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $prevProgress = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try {
-        # Meme archive que l'installeur officiel (https://opencode.ai/install) pour windows-x64
-        $url = "https://github.com/anomalyco/opencode/releases/download/v$Version/opencode-windows-x64.zip"
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        $zip = Join-Path $TmpDir 'opencode-windows-x64.zip'
-        try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing }
-        catch { throw "Telechargement impossible ($url) : $($_.Exception.Message)" }
-        Expand-Archive -Path $zip -DestinationPath $dir -Force
-    }
-    finally { $ProgressPreference = $prevProgress }
-    $found = Get-ChildItem $dir -Recurse -Filter 'opencode.exe' | Select-Object -First 1
-    if (-not $found) { throw "opencode.exe introuvable dans l'archive telechargee ($dir)." }
-    return $found.FullName
-}
-
-function Select-OpenCodeProject {
-    # Menu des dossiers de ~/projets sur la VM.
-    $log = Join-Path $TmpDir 'ssh-ls.log'
-    $list = @(& ssh -E $log $Name "find ~/projets -mindepth 1 -maxdepth 1 -type d -not -name '.*' -printf '%f\n' 2>/dev/null | sort" |
-        Where-Object { $_ -match '\S' } | ForEach-Object { $_.Trim() })
-    if ($list.Count -eq 0) { return $null }
-    if ($list.Count -eq 1) { return $list[0] }
-    Write-Host ''
-    for ($i = 0; $i -lt $list.Count; $i++) { Write-Host ('  [{0}] {1}' -f ($i + 1), $list[$i]) }
-    do {
-        $n = Read-Host "Projet (1-$($list.Count))"
-        $k = $n -as [int]
-    } while (-not $k -or $k -lt 1 -or $k -gt $list.Count)
-    return $list[$k - 1]
-}
-
 function Open-OpenCode {
     Start-DevBox -Quiet
     $id = Get-InstanceIdOrThrow
-    $proj = if ($Project) { $Project } else { Select-OpenCodeProject }
-    $dir = if ($proj) { "/home/ubuntu/projets/$proj" } else { '/home/ubuntu/projets' }
 
-    Write-Step 'opencode sur la VM'
-    # Idempotent : installe opencode, cree le service opencode-serve (127.0.0.1 uniquement) et
-    # fait compter une session opencode attach comme une activite pour l'arret automatique.
+    Write-Step 'OpenCode 2 sur la VM'
+    # Idempotent : installe ou met a jour OpenCode 2, fait tourner son serveur (opencode serve --service,
+    # 127.0.0.1 uniquement, mot de passe genere par OpenCode) en service systemd demarre avec la VM,
+    # compte une application connectee comme activite pour l'arret automatique, et produit un lien d'appairage.
     $setup = @'
 set -e
 export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
-if ! command -v opencode >/dev/null 2>&1; then
-  echo "Installation d'opencode (une seule fois)..." >&2
-  curl -fsSL https://opencode.ai/install | bash >/dev/null
-  export PATH="$HOME/.opencode/bin:$PATH"
-fi
-OC=$(command -v opencode || true)
+cur=$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+case "$cur" in
+  2.*) ;;
+  *) echo "Installation d'OpenCode 2 sur la VM..." >&2
+     curl -fsSL https://opencode.ai/v2/install | bash >/dev/null ;;
+esac
+OC="$HOME/.opencode/bin/opencode"
+[ -x "$OC" ] || OC=$(command -v opencode || true)
 if [ -z "$OC" ]; then echo "opencode introuvable apres installation" >&2; exit 1; fi
-mkdir -p "$HOME/projets"
-if [ ! -f /etc/systemd/system/opencode-serve.service ]; then
-  sudo tee /etc/systemd/system/opencode-serve.service >/dev/null <<EOF
+mkdir -p "$HOME/projets" "$HOME/.config/opencode"
+if [ ! -f "$HOME/.config/opencode/AGENTS.md" ] && [ -f "$HOME/.claude/CLAUDE.md" ]; then
+  cp "$HOME/.claude/CLAUDE.md" "$HOME/.config/opencode/AGENTS.md"
+fi
+UNIT=/etc/systemd/system/opencode-serve.service
+WANT=$(cat <<EOF
 [Unit]
-Description=opencode serve (devbox)
+Description=OpenCode 2 server (devbox)
 After=network-online.target
 
 [Service]
 User=ubuntu
 WorkingDirectory=/home/ubuntu/projets
 Environment=PATH=/home/ubuntu/.opencode/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=$OC serve --port __PORT__ --hostname 127.0.0.1
+ExecStart=$OC serve --service
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
+)
+if [ "$(cat "$UNIT" 2>/dev/null)" != "$WANT" ]; then
+  "$OC" service stop >/dev/null 2>&1 || true
+  printf '%s\n' "$WANT" | sudo tee "$UNIT" >/dev/null
   sudo systemctl daemon-reload
+  sudo systemctl enable opencode-serve >/dev/null 2>&1
+  sudo systemctl restart opencode-serve
+else
+  sudo systemctl enable --now opencode-serve >/dev/null 2>&1
 fi
-sudo systemctl enable --now opencode-serve >/dev/null 2>&1
-if ! grep -q 'sport = :__PORT__' /usr/local/bin/devbox-idle-check; then
-  sudo sed -i 's/( sport = :8443 )/( sport = :8443 or sport = :__PORT__ )/' /usr/local/bin/devbox-idle-check
+IDLE=/usr/local/bin/devbox-idle-check
+if ! grep -q 'sport = :__PORT__' "$IDLE"; then
+  sudo sed -i -e 's/ or sport = :4096 )/ )/' -e 's/( sport = :8443 )/( sport = :8443 or sport = :__PORT__ )/' "$IDLE"
 fi
-for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:__PORT__/ && break; sleep 1; done
-curl -s -o /dev/null http://127.0.0.1:__PORT__/ && echo "SERVER_OK"
-[ -d "__DIR__" ] && echo "DIR_OK"
+for i in $(seq 1 30); do curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && break; sleep 1; done
+curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && echo "SERVER_OK"
 echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+echo "PAIR=$("$OC" pair 2>/dev/null | grep -oE 'http://127\.0\.0\.1:[0-9]+/auth/connect/[A-Za-z0-9_-]+' | head -n 1)"
 '@
-    $setup = ($setup -replace "`r", '') -replace '__PORT__', $OpenCodePort -replace '__DIR__', $dir
+    $setup = ($setup -replace "`r", '') -replace '__PORT__', $OpenCodePort
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($setup))
     $log = Join-Path $TmpDir 'ssh-opencode.log'
     $out = @(& ssh -E $log $Name "echo $b64 | base64 -d > /tmp/devbox-opencode.sh && bash /tmp/devbox-opencode.sh")
     $text = $out -join "`n"
     if ($text -notmatch 'SERVER_OK') {
-        throw "opencode serve ne repond pas sur la VM. Journal : ssh $Name `"journalctl -u opencode-serve -n 30 --no-pager`""
+        throw "Le serveur OpenCode ne repond pas sur la VM. Journal : ssh $Name `"journalctl -u opencode-serve -n 30 --no-pager`""
     }
-    if ($text -notmatch 'DIR_OK') { throw "Dossier introuvable sur la VM : $dir (liste : ssh $Name `"ls ~/projets`")" }
-    $version = if ($text -match 'VERSION=(\d+\.\d+\.\d+)') { $Matches[1] } else { throw 'Version d''opencode illisible sur la VM.' }
-    Write-Ok "opencode $version actif sur la VM (service opencode-serve)"
+    $version = if ($text -match 'VERSION=(\d+\.\d+\.\d+)') { $Matches[1] } else { '?' }
+    Write-Ok "OpenCode $version actif sur la VM"
 
-    $exe = Get-OpenCodeClient $version
+    Write-Step 'Tunnel vers OpenCode'
+    # Port local different du port de la VM : l'application OpenCode peut deja utiliser 49374 sur le PC.
+    if (Wait-LocalPort $OpenCodeLocalPort 1) {
+        Write-Ok "Tunnel deja ouvert sur 127.0.0.1:$OpenCodeLocalPort"
+    }
+    else {
+        $tunnel = "Write-Host 'Tunnel OpenCode actif sur 127.0.0.1:$OpenCodeLocalPort. Laisse cette fenetre ouverte pendant que tu utilises OpenCode, ferme-la pour couper.'; " +
+                  "aws ssm start-session --target $id --document-name AWS-StartPortForwardingSession " +
+                  "--parameters 'portNumber=$OpenCodePort,localPortNumber=$OpenCodeLocalPort' --profile $AwsProfile --region $Region"
+        Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoExit -NoProfile -Command `"$tunnel`""
+        if (-not (Wait-LocalPort $OpenCodeLocalPort 60)) { throw "Tunnel SSM vers le port $OpenCodePort impossible." }
+        Write-Ok "Tunnel ouvert sur 127.0.0.1:$OpenCodeLocalPort (fenetre separee)"
+    }
 
-    Write-Step 'Tunnel vers opencode'
-    # Un seul tunnel pour toutes les fenetres opencode ouvertes sur ce PC (un projet par fenetre).
-    if (-not (Wait-LocalPort $OpenCodeLocalPort 1)) {
-        $aws = (Get-Command aws -CommandType Application | Select-Object -First 1).Source
-        $tunnel = Start-Process -FilePath $aws -WindowStyle Hidden -PassThru -ArgumentList @(
-            'ssm', 'start-session', '--target', $id, '--document-name', 'AWS-StartPortForwardingSession',
-            '--parameters', "portNumber=$OpenCodePort,localPortNumber=$OpenCodeLocalPort",
-            '--profile', $AwsProfile, '--region', $Region)
-        if (-not (Wait-LocalPort $OpenCodeLocalPort 60)) {
-            Stop-OpenCodeTunnel
-            throw "Tunnel SSM vers le port $OpenCodePort impossible."
-        }
+    $pair = if ($text -match 'PAIR=(http\S+)') { $Matches[1] -replace '127\.0\.0\.1:\d+', "127.0.0.1:$OpenCodeLocalPort" } else { $null }
+    Write-Host ''
+    Write-Host "Serveur OpenCode : http://127.0.0.1:$OpenCodeLocalPort" -ForegroundColor Green
+    if ($pair) {
+        $copied = $false
+        try { Set-Clipboard -Value $pair; $copied = $true } catch { }
+        Write-Host "Lien de connexion (une seule utilisation, valable 5 min)$(if ($copied) { ', copie dans le presse-papiers' }) :"
+        Write-Host "  $pair" -ForegroundColor Cyan
+        Write-Host @"
+  Premiere fois : colle ce lien dans l'application OpenCode (adresse du serveur).
+  Ensuite       : ouvre simplement l'application, elle se reconnecte (30 jours).
+  Sans l'app    : colle le lien dans ton navigateur (interface web).
+  Fin           : ferme l'application puis la fenetre du tunnel.
+"@
     }
-    Write-Ok "Tunnel actif sur localhost:$OpenCodeLocalPort"
-    Write-Info "Ouverture d'opencode dans $dir"
-    Write-Info 'Quitter : /exit. Reprendre une ancienne session : /sessions. Autre projet : nouvel onglet, meme commande.'
-    try {
-        Invoke-Interactive $exe @('attach', "http://127.0.0.1:$OpenCodeLocalPort", '--dir', $dir) | Out-Null
-    }
-    finally {
-        # Le tunnel n'est coupe qu'a la fermeture de la derniere fenetre opencode.
-        if (@(Get-Process -Name opencode -ErrorAction SilentlyContinue).Count -eq 0) { Stop-OpenCodeTunnel }
+    else {
+        Write-Warning "Lien de connexion indisponible : ssh $Name `"~/.opencode/bin/opencode pair`""
     }
 }
 

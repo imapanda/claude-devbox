@@ -18,7 +18,7 @@ Tout tient dans un seul script PowerShell : `DevBox.ps1`.
 - [Arrêt automatique](#arrêt-automatique)
 - [Bureau graphique (DCV)](#bureau-graphique-dcv)
 - [Navigateur pour Claude](#navigateur-pour-claude)
-- [opencode](#opencode)
+- [OpenCode](#opencode)
 - [Changer la puissance](#changer-la-puissance)
 - [Depuis un téléphone](#depuis-un-téléphone)
 - [Coûts](#coûts)
@@ -61,7 +61,7 @@ Ensuite, dans n'importe quelle fenêtre PowerShell :
 | `devbox stop` | `.\DevBox.ps1 -Action Stop` |
 | `devbox` | `.\DevBox.ps1` (état de la VM) |
 | `devbox dcv` | `.\DevBox.ps1 -Action Dcv` |
-| `devbox opencode` | `.\DevBox.ps1 -Action OpenCode` (menu des projets) |
+| `devbox opencode` | `.\DevBox.ps1 -Action OpenCode` |
 
 Les autres paramètres s'ajoutent comme d'habitude : `devbox resize -InstanceType c8a.4xlarge`. À refaire sur chaque PC.
 
@@ -214,7 +214,7 @@ Rien à refaire sur la VM. Les deux PC peuvent être connectés en même temps ;
 | `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte à AWS si besoin) |
 | `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
 | `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
-| `.\DevBox.ps1 -Action OpenCode` | ouvre opencode sur la VM (menu des projets, ou `-Project mon-api`) |
+| `.\DevBox.ps1 -Action OpenCode` | OpenCode 2 sur la VM + tunnel + lien de connexion pour l'application |
 | `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau graphique |
 | `.\DevBox.ps1 -Action Idle -IdleMinutes 30` | change le délai d'arrêt automatique |
 | `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la puissance de la VM |
@@ -304,7 +304,7 @@ La VM s'éteint quand **Claude a fini de travailler** depuis 15 minutes. Une vé
 | Claude attend ta validation depuis plus de 15 min | **s'éteint** |
 | Une boucle `/loop` tourne | reste allumée |
 | Bureau graphique connecté | reste allumée |
-| `opencode attach` ouvert sur un PC | reste allumée |
+| Application OpenCode connectée | reste allumée |
 | Build ou tests qui font travailler le processeur | reste allumée |
 | Session Claude Desktop ouverte mais inactive | **s'éteint** |
 | `devbox-hold` actif | reste allumée |
@@ -354,45 +354,43 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
 - Demande-le explicitement : « vérifie l'écran de connexion dans le navigateur et fais une capture ».
 - Pour le retirer : `~/.local/bin/claude mcp remove --scope user playwright`.
 
-## opencode
+## OpenCode
 
-[opencode](https://opencode.ai) peut tourner sur la VM à côté de Claude Code : le serveur (`opencode serve`) sur la VM, l'interface (`opencode attach`) dans le terminal du PC.
+[OpenCode](https://opencode.ai) peut tourner sur la VM à côté de Claude Code : le serveur OpenCode 2 sur la VM, l'**application OpenCode** (ou le navigateur) sur le PC.
 
-### Ouvrir un projet
+### Première fois
 
-```powershell
-devbox opencode                          # menu des dossiers de ~/projets : tape le numéro
-devbox opencode -Project mon-api         # directement ~/projets/mon-api
-```
+1. Installe l'application OpenCode sur le PC : [opencode.ai/download](https://opencode.ai/download).
+2. Lance :
+   ```powershell
+   devbox opencode
+   ```
+   Le script démarre la VM si besoin, installe OpenCode 2 sur la VM (serveur en service, démarré avec la VM, mot de passe généré par OpenCode, joignable seulement par le tunnel), ouvre le tunnel dans une **fenêtre séparée à laisser ouverte**, et copie un **lien de connexion** dans le presse-papiers.
+3. Dans l'application OpenCode, colle le lien dans l'adresse du serveur. Le lien ne sert qu'une fois et expire au bout de 5 minutes : relance `devbox opencode` pour en avoir un nouveau.
+4. Configure ton fournisseur de modèles dans l'application : les identifiants restent sur la VM.
 
-(Sans le raccourci : `.\DevBox.ps1 -Action OpenCode [-Project mon-api]`.)
+### Ensuite
 
-Le script démarre la VM si besoin, installe opencode sur la VM au premier appel (service `opencode-serve`, joignable seulement par le tunnel SSM), télécharge sur le PC le client Windows de la même version, ouvre le tunnel et lance opencode dans le dossier du projet.
+`devbox opencode`, puis ouvre l'application : elle se reconnecte toute seule au serveur `http://127.0.0.1:14374` (connexion valable 30 jours).
 
-Au premier lancement, tape `/connect` dans opencode pour choisir ton fournisseur de modèles : les identifiants restent sur la VM, valables depuis tous tes PC.
+Sans l'application : colle le lien dans ton navigateur, c'est la même interface en version web.
 
-### Plusieurs projets en même temps
+### Projets
 
-Un onglet du Terminal Windows par projet, chacun avec `devbox opencode`. Un seul serveur et un seul tunnel servent toutes les fenêtres.
-
-### Dans opencode
-
-| Pour | Tape |
-|---|---|
-| Quitter | `/exit` |
-| Reprendre une session précédente du projet | `/sessions` |
-| Nouvelle session | `/new` |
+Dans l'application, ouvre les dossiers de `~/projets` : ce sont ceux de la VM. Plusieurs projets peuvent être ouverts en même temps.
 
 ### Terminer
 
-1. `/exit` dans chaque fenêtre opencode : le tunnel se ferme avec la dernière. Le serveur reste sur la VM avec l'historique des sessions.
+1. Ferme l'application, puis la fenêtre du tunnel.
 2. La VM s'éteint seule 15 min après (si Claude ne travaille pas), ou tout de suite avec `devbox stop`.
 
 Bon à savoir :
-- Tant qu'une fenêtre opencode est ouverte, la VM ne s'éteint pas (comme le bureau DCV).
-- Un travail long d'opencode, fenêtre fermée, n'est vu par l'arrêt automatique que s'il occupe le CPU : sinon, `ssh devbox devbox-hold 2h`.
-- Consignes de sobriété CPU pour opencode : `ssh devbox "mkdir -p ~/.config/opencode && cat ~/.claude/CLAUDE.md >> ~/.config/opencode/AGENTS.md"`.
+- Tant que l'application est connectée, la VM ne s'éteint pas (comme le bureau DCV).
+- Un travail long d'OpenCode, application fermée, n'est vu par l'arrêt automatique que s'il occupe le CPU : sinon, `ssh devbox devbox-hold 2h`.
+- Les consignes de sobriété CPU de `~/.claude/CLAUDE.md` sont copiées dans `~/.config/opencode/AGENTS.md` à l'installation.
+- Le port 14374 sur le PC évite le conflit avec le serveur local que l'application peut lancer sur 49374.
 - Journal du serveur : `ssh devbox "journalctl -u opencode-serve -n 50 --no-pager"`.
+- Mise à jour d'OpenCode sur la VM : `ssh devbox "~/.opencode/bin/opencode upgrade && sudo systemctl restart opencode-serve"`.
 
 ## Changer la puissance
 
@@ -523,7 +521,7 @@ Ce que le script crée :
 | Disque | gp3 chiffré, 100 Go, débit 250 Mo/s |
 | Rôle IAM de la VM | SSM et licence DCV uniquement |
 | Groupe de sécurité | aucune règle entrante |
-| Logiciels | Docker et Compose, Git, GitHub CLI, Claude Code en ligne de commande, opencode (au premier `-Action OpenCode`), navigateur Playwright pour Claude, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
+| Logiciels | Docker et Compose, Git, GitHub CLI, Claude Code en ligne de commande, OpenCode 2 (au premier `-Action OpenCode`), navigateur Playwright pour Claude, htop et btop, bureau XFCE (clavier AZERTY), Amazon DCV, Firefox |
 | Sur le PC | une clé SSH propre au PC, une entrée `devbox` dans `~/.ssh/config`, un fichier d'état dans `%USERPROFILE%\.devbox\` |
 | Budget (option) | alerte e-mail à 80 % du budget mensuel (réel) et à 100 % (prévision) |
 
@@ -565,7 +563,6 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 | `-IdleMinutes` | `15` | délai d'arrêt après la fin du travail de Claude |
 | `-BudgetUsd` | `150` | budget mensuel de l'alerte |
 | `-BudgetEmail` | | e-mail de l'alerte budget |
-| `-Project` | menu | dossier sous `~/projets` ouvert par `-Action OpenCode` |
 
 ## Licence
 
