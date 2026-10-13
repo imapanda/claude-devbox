@@ -326,6 +326,18 @@ docker pull mcr.microsoft.com/playwright/mcp || true
 sudo -u ubuntu -H /home/ubuntu/.local/bin/claude mcp add --scope user playwright -- \
   docker run -i --rm --init --network host mcr.microsoft.com/playwright/mcp || true
 
+# Consignes globales pour Claude : la VM est partagee entre plusieurs sessions
+if [ ! -f /home/ubuntu/.claude/CLAUDE.md ]; then
+  cat > /home/ubuntu/.claude/CLAUDE.md <<'EOF'
+## Ressources de la VM (partagee entre plusieurs sessions Claude)
+- Avant un job lourd (tests, mutation testing, build), regarde la charge avec `uptime` : si elle depasse le nombre de coeurs (`nproc`), attends ou reduis.
+- Parallelisme maximum : 2 workers (`pytest -n 2`, `mutmut run --max-children 2`, `make -j2`), jamais `-n auto`.
+- Une seule campagne de mutation testing a la fois sur toute la VM.
+- Arrete les conteneurs Docker de test quand tu as fini (`docker compose down`).
+EOF
+  chown ubuntu:ubuntu /home/ubuntu/.claude/CLAUDE.md
+fi
+
 mkdir -p /var/lib/devbox
 touch /var/lib/devbox/ready
 echo "DevBox prete"

@@ -271,6 +271,19 @@ Puis dans Claude Desktop : onglet **Code** > nouvelle session > environnement **
 - **Plusieurs sessions sur le même projet** : coche l'option **worktree** au démarrage de la session. Chacune travaille alors sur sa propre copie Git.
 - **Ports Docker** : deux stacks sur le même port entrent en conflit. Mets les ports dans un `.env` par projet, précise la règle dans le `CLAUDE.md`, et ajoute un fichier `.worktreeinclude` pour copier le `.env` dans chaque worktree.
 - **Mémoire** : avec 32 Go et environ 5 Go par stack, compte 4 à 5 stacks actives en même temps.
+- **CPU** : plusieurs sessions qui lancent en même temps des jobs lourds (mutation testing, `pytest -n auto`) peuvent faire monter la charge à 90 sur 8 cœurs et figer la VM. Le script crée `~/.claude/CLAUDE.md` sur la VM avec des consignes de sobriété (2 workers maximum, une seule campagne de mutation testing à la fois). Sur une VM plus ancienne, ajoute-les une fois :
+  ```powershell
+  $OutputEncoding = [Text.UTF8Encoding]::new($false)
+  @'
+
+  ## Ressources de la VM (partagée entre plusieurs sessions Claude)
+  - Avant un job lourd (tests, mutation testing, build), regarde la charge avec `uptime` : si elle dépasse le nombre de cœurs (`nproc`), attends ou réduis.
+  - Parallélisme maximum : 2 workers (`pytest -n 2`, `mutmut run --max-children 2`, `make -j2`), jamais `-n auto`.
+  - Une seule campagne de mutation testing à la fois sur toute la VM.
+  - Arrête les conteneurs Docker de test quand tu as fini (`docker compose down`).
+  '@ | ssh devbox "tr -d '\r' >> ~/.claude/CLAUDE.md"
+  ```
+  Les consignes s'appliquent aux nouvelles sessions.
 
 Le panneau Terminal de Claude Desktop ne fonctionne qu'en local : garde une fenêtre `ssh devbox` ouverte à côté si besoin.
 
