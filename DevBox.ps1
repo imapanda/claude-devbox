@@ -1018,6 +1018,12 @@ function Wait-LocalPort([int]$Port, [int]$TimeoutSec = 60) {
     return $false
 }
 
+function Stop-OpenCodeTunnel {
+    Get-CimInstance Win32_Process -Filter "Name = 'aws.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "localPortNumber=$OpenCodeLocalPort" } |
+        ForEach-Object { Start-Process taskkill -ArgumentList '/PID', $_.ProcessId, '/T', '/F' -WindowStyle Hidden -Wait }
+}
+
 function Get-OpenCodeClient([string]$Version) {
     # Client Windows de la meme version que le serveur de la VM, telecharge une fois depuis GitHub.
     $dir = Join-Path $env:LOCALAPPDATA "devbox\opencode\$Version"
@@ -1103,7 +1109,7 @@ echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' 
     $exe = Get-OpenCodeClient $version
 
     Write-Step 'Tunnel vers opencode'
-    $tunnel = $null
+    # Un seul tunnel pour toutes les fenetres opencode ouvertes sur ce PC (un projet par fenetre).
     if (-not (Wait-LocalPort $OpenCodeLocalPort 1)) {
         $aws = (Get-Command aws -CommandType Application | Select-Object -First 1).Source
         $tunnel = Start-Process -FilePath $aws -WindowStyle Hidden -PassThru -ArgumentList @(
@@ -1111,19 +1117,18 @@ echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' 
             '--parameters', "portNumber=$OpenCodePort,localPortNumber=$OpenCodeLocalPort",
             '--profile', $AwsProfile, '--region', $Region)
         if (-not (Wait-LocalPort $OpenCodeLocalPort 60)) {
-            if (-not $tunnel.HasExited) { Start-Process taskkill -ArgumentList '/PID', $tunnel.Id, '/T', '/F' -WindowStyle Hidden -Wait }
+            Stop-OpenCodeTunnel
             throw "Tunnel SSM vers le port $OpenCodePort impossible."
         }
     }
     Write-Ok "Tunnel actif sur localhost:$OpenCodeLocalPort"
-    Write-Info "Ouverture d'opencode dans $dir. En le quittant, le tunnel se ferme ; le serveur reste actif sur la VM."
+    Write-Info "Ouverture d'opencode dans $dir. Autre projet en parallele : nouvel onglet, meme commande avec un autre -Project."
     try {
         Invoke-Interactive $exe @('attach', "http://127.0.0.1:$OpenCodeLocalPort", '--dir', $dir) | Out-Null
     }
     finally {
-        if ($tunnel -and -not $tunnel.HasExited) {
-            Start-Process taskkill -ArgumentList '/PID', $tunnel.Id, '/T', '/F' -WindowStyle Hidden -Wait
-        }
+        # Le tunnel n'est coupe qu'a la fermeture de la derniere fenetre opencode.
+        if (@(Get-Process -Name opencode -ErrorAction SilentlyContinue).Count -eq 0) { Stop-OpenCodeTunnel }
     }
 }
 

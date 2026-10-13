@@ -368,10 +368,17 @@ Le script fait tout, la première fois comme les suivantes :
 - télécharge sur le PC le client Windows **de la même version** que le serveur ;
 - ouvre un tunnel et lance `opencode attach` dans `~/projets/mon-api` (sans `-Project` : `~/projets`).
 
+**Plusieurs projets en même temps** : un onglet du Terminal Windows par projet, avec la même commande et un autre `-Project`. Un seul serveur opencode sur la VM et un seul tunnel servent toutes les fenêtres ; le tunnel se ferme avec la dernière.
+
+```powershell
+devbox opencode -Project chiffrage-structa      # onglet 1
+devbox opencode -Project programme-lancements   # onglet 2
+```
+
 Au premier lancement, tape `/connect` dans opencode pour choisir ton fournisseur de modèles : les identifiants sont enregistrés sur la VM, donc valables depuis tous tes PC.
 
 - Tant que `opencode attach` est ouvert, la VM ne s'éteint pas (comme le bureau DCV). Ferme-le quand tu as fini.
-- Quand tu le quittes, le tunnel se ferme mais le serveur continue : tu peux reprendre la session depuis un autre PC.
+- Quand tu le quittes, le serveur continue sur la VM : tu peux reprendre la session plus tard, ou depuis un autre PC.
 - Un travail long d'opencode, fenêtre fermée, n'est vu par l'arrêt automatique que s'il occupe le CPU : sinon, `ssh devbox devbox-hold 2h`.
 - Journal du serveur : `ssh devbox "journalctl -u opencode-serve -n 50 --no-pager"`.
 
