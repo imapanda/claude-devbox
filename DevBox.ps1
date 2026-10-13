@@ -13,7 +13,7 @@
       Status    Affiche l'etat de la machine.
       Dcv       Demarre si besoin, ouvre le tunnel DCV et le bureau dans le navigateur.
       OpenCode  Demarre si besoin, installe/lance opencode serve sur la VM et l'ouvre sur le PC
-                (opencode attach), dans ~/projets/<Project> (ex. -Project mon-api).
+                (opencode attach) dans ~/projets/<Project> ; sans -Project, menu des projets.
       Password  Change le mot de passe du bureau DCV (utilisateur ubuntu).
       Resize    Change le type d'instance (ex. -InstanceType c8a.4xlarge).
       Idle      Change le delai d'arret automatique (ex. -IdleMinutes 60).
@@ -1048,10 +1048,27 @@ function Get-OpenCodeClient([string]$Version) {
     return $found.FullName
 }
 
+function Select-OpenCodeProject {
+    # Menu des dossiers de ~/projets sur la VM.
+    $log = Join-Path $TmpDir 'ssh-ls.log'
+    $list = @(& ssh -E $log $Name "find ~/projets -mindepth 1 -maxdepth 1 -type d -not -name '.*' -printf '%f\n' 2>/dev/null | sort" |
+        Where-Object { $_ -match '\S' } | ForEach-Object { $_.Trim() })
+    if ($list.Count -eq 0) { return $null }
+    if ($list.Count -eq 1) { return $list[0] }
+    Write-Host ''
+    for ($i = 0; $i -lt $list.Count; $i++) { Write-Host ('  [{0}] {1}' -f ($i + 1), $list[$i]) }
+    do {
+        $n = Read-Host "Projet (1-$($list.Count))"
+        $k = $n -as [int]
+    } while (-not $k -or $k -lt 1 -or $k -gt $list.Count)
+    return $list[$k - 1]
+}
+
 function Open-OpenCode {
     Start-DevBox -Quiet
     $id = Get-InstanceIdOrThrow
-    $dir = if ($Project) { "/home/ubuntu/projets/$Project" } else { '/home/ubuntu/projets' }
+    $proj = if ($Project) { $Project } else { Select-OpenCodeProject }
+    $dir = if ($proj) { "/home/ubuntu/projets/$proj" } else { '/home/ubuntu/projets' }
 
     Write-Step 'opencode sur la VM'
     # Idempotent : installe opencode, cree le service opencode-serve (127.0.0.1 uniquement) et
@@ -1122,7 +1139,8 @@ echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' 
         }
     }
     Write-Ok "Tunnel actif sur localhost:$OpenCodeLocalPort"
-    Write-Info "Ouverture d'opencode dans $dir. Autre projet en parallele : nouvel onglet, meme commande avec un autre -Project."
+    Write-Info "Ouverture d'opencode dans $dir"
+    Write-Info 'Quitter : /exit. Reprendre une ancienne session : /sessions. Autre projet : nouvel onglet, meme commande.'
     try {
         Invoke-Interactive $exe @('attach', "http://127.0.0.1:$OpenCodeLocalPort", '--dir', $dir) | Out-Null
     }
