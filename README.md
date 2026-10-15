@@ -217,7 +217,7 @@ Rien à refaire sur la VM. Les deux PC peuvent être connectés en même temps ;
 | `.\DevBox.ps1 -Action Start` | démarre la VM (et te reconnecte à AWS si besoin) |
 | `.\DevBox.ps1 -Action Stop` | arrête la VM et confirme l'état `stopped` auprès d'AWS |
 | `.\DevBox.ps1 -Action Dcv` | ouvre le bureau graphique dans le navigateur |
-| `.\DevBox.ps1 -Action OpenCode` | OpenCode 2 sur la VM + tunnel + lien de connexion pour l'application |
+| `.\DevBox.ps1 -Action OpenCode` | installe ou met à jour OpenCode 2 sur la VM ; avec `-DeepSeekResource` et `-DeepSeekDeployment`, ajoute Azure DeepSeek et les agents orchestrateur et exécutant |
 | `.\DevBox.ps1 -Action Password` | change le mot de passe du bureau graphique |
 | `.\DevBox.ps1 -Action Idle -IdleMinutes 30` | change le délai d'arrêt automatique |
 | `.\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge` | change la puissance de la VM |
@@ -359,7 +359,7 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
 
 ## OpenCode
 
-[OpenCode](https://opencode.ai) peut tourner sur la VM à côté de Claude Code : le serveur OpenCode 2 sur la VM, l'**application OpenCode** (ou le navigateur) sur le PC.
+[OpenCode](https://opencode.ai) peut tourner sur la VM à côté de Claude Code : le serveur OpenCode 2 sur la VM, l'**application OpenCode** sur le PC, reliés par SSH (le même accès que Claude Desktop, aucun port ouvert).
 
 ### Première fois
 
@@ -368,33 +368,76 @@ Ouvre ensuite une **nouvelle** session dans Claude Desktop (les sessions déjà 
    ```powershell
    devbox opencode
    ```
-   Le script démarre la VM si besoin, installe OpenCode 2 sur la VM (serveur en service, démarré avec la VM, mot de passe généré par OpenCode, joignable seulement par le tunnel), ouvre le tunnel dans une **fenêtre séparée à laisser ouverte**, et copie un **lien de connexion** dans le presse-papiers.
-3. Dans l'application OpenCode, colle le lien dans l'adresse du serveur. Le lien ne sert qu'une fois et expire au bout de 5 minutes : relance `devbox opencode` pour en avoir un nouveau.
-   Si l'application demande plutôt les champs d'un serveur (accueil : `Ctrl+B`), le script les affiche aussi : serveur `http://127.0.0.1:14374`, utilisateur `opencode`, mot de passe généré sur la VM, dossier `/home/ubuntu/projets`.
-4. Configure ton fournisseur de modèles dans l'application : les identifiants restent sur la VM.
+   Le script démarre la VM si besoin et installe ou met à jour OpenCode 2 sur la VM.
+3. Dans l'application : **Ajouter un serveur → Ajouter le serveur SSH**, champ **Commande hôte ou SSH** : `devbox`, puis **Se connecter**. L'application démarre elle-même le serveur OpenCode de la VM.
+4. **Ajouter un projet** → choisis un dossier de `/home/ubuntu/projets`.
+5. Connecte tes fournisseurs de modèles dans l'application (Paramètres → Fournisseurs) : les identifiants sont stockés sur la VM.
+
+> Version précédente du script (serveur en service `opencode-serve` + tunnel + lien de connexion) : relance `devbox opencode`, il retire l'ancien service. Supprime ensuite l'ancien serveur `http://127.0.0.1:14374` de l'application.
 
 ### Ensuite
 
-`devbox opencode`, puis ouvre l'application : elle se reconnecte toute seule au serveur `http://127.0.0.1:14374` (connexion valable 30 jours).
-
-Sans l'application : colle le lien dans ton navigateur, c'est la même interface en version web.
+`devbox start`, puis ouvre l'application : elle se reconnecte à la VM. La VM doit être allumée, l'application ne la démarre pas.
 
 ### Projets
 
 Dans l'application, ouvre les dossiers de `~/projets` : ce sont ceux de la VM. Plusieurs projets peuvent être ouverts en même temps.
 
+**Dépôt local / Nouvel espace de travail / Arbre de travail** (sous la zone de saisie) : travailler directement dans le dossier du projet, ou dans une copie Git séparée (worktree) pour ne pas mélanger deux chantiers.
+
+### Orchestrateur Opus + exécutant DeepSeek
+
+Un agent **orchestrateur** sur Claude Opus planifie, découpe le travail et relit chaque commit ; il confie chaque tâche à un sous-agent **exécutant** sur DeepSeek V4.1 Flash, beaucoup moins cher, qui écrit le code et lance les tests. Opus ne voit que les plans et les diffs : l'essentiel des jetons passe par DeepSeek.
+
+**Prérequis** : Claude Opus connecté dans l'application via le fournisseur **Azure** (identifiant `azure/claude-opus-5-5`), et DeepSeek V4.1 Flash déployé dans Microsoft Foundry.
+
+**Une fois :**
+```powershell
+devbox opencode -DeepSeekResource <ressource-azure> -DeepSeekDeployment <nom-du-déploiement>
+```
+- `<ressource-azure>` : le nom seul de la ressource Foundry qui porte DeepSeek (le début de `https://<ressource>.openai.azure.com`), pas l'URL.
+- `<nom-du-déploiement>` : le nom exact du déploiement dans Foundry (ex. `DeepSeek-V4.1-Flash`).
+- Le script demande la **clé API** de la ressource (Foundry → ressource → Endpoints and keys). Elle passe par SSH sans apparaître dans une commande et n'est stockée que sur la VM : `~/.config/opencode/azure-deepseek.key`, droits 600.
+
+Ce que le script installe sur la VM :
+
+| Élément | Où | Détail |
+|---|---|---|
+| Fournisseur **Azure DeepSeek** | `~/.config/opencode/opencode.jsonc` | API compatible OpenAI de Foundry (`https://<ressource>.openai.azure.com/openai/v1`) |
+| Agent **orchestrateur** | `~/.config/opencode/agents/orchestrateur.md` | Opus, ne peut pas modifier de fichier, peut appeler l'exécutant |
+| Agent **executant** | `~/.config/opencode/agents/executant.md` | DeepSeek avec effort de réflexion `high`, modifie et lance les commandes sans demander, `git push` interdit |
+
+Pourquoi un fournisseur à part : le fournisseur **Azure** intégré à OpenCode ne gère qu'une ressource à la fois (celle d'Opus), et le formulaire « Fournisseur personnalisé » de l'application est désactivé dans OpenCode 2. `opencode.jsonc` doit être du JSON sans commentaires pour que le script puisse y ajouter le fournisseur.
+
+**Dans l'application, une fois :** Paramètres → Préférences → **Agents personnalisés** : activé (le sélecteur d'agent est masqué par défaut).
+
+**À chaque session :** dans la zone de saisie, choisis l'agent **orchestrateur** (`Ctrl+.` pour changer d'agent) et l'effort **High**. L'exécutant n'apparaît pas dans le sélecteur : seul l'orchestrateur l'appelle. Demande-lui un état des lieux avant de lancer un chantier, par exemple :
+
+```text
+Fais l'état des lieux du dépôt en lecture seule : branche, git status, commits pas encore poussés, ticket et PR liés, résultat du lint, du typage et des tests (2 workers au maximum). Présente-moi ce qui est fait, ce qui reste et ton plan, puis attends mon feu vert. Ne pousse rien sans mon accord.
+```
+
+Vérifier sur la VM :
+```bash
+~/.opencode/bin/opencode models | grep -iE "opus|deepseek"
+~/.opencode/bin/opencode debug agents | jq '.. | objects | select(.id? == "orchestrateur" or .id? == "executant") | {id, mode, model}'
+```
+
+Les prompts des agents sont dans [`opencode/agents/`](opencode/agents) de ce dépôt. Les agents déjà présents sur la VM ne sont jamais écrasés : pour les modifier, édite `~/.config/opencode/agents/*.md` sur la VM puis `~/.opencode/bin/opencode reload`, ou supprime-les et relance `devbox opencode`. Autres modèles : `-OrchestratorModel` et `-ExecutorModel` (format `fournisseur/modèle`, `#high` pour l'effort de réflexion), mémorisés comme les paramètres DeepSeek.
+
 ### Terminer
 
-1. Ferme l'application, puis la fenêtre du tunnel.
+1. Ferme l'application.
 2. La VM s'éteint seule 15 min après (si Claude ne travaille pas), ou tout de suite avec `devbox stop`.
 
 Bon à savoir :
 - Tant que l'application est connectée, la VM ne s'éteint pas (comme le bureau DCV).
 - Un travail long d'OpenCode, application fermée, n'est vu par l'arrêt automatique que s'il occupe le CPU : sinon, `ssh devbox devbox-hold 2h`.
 - Les consignes de sobriété CPU de `~/.claude/CLAUDE.md` sont copiées dans `~/.config/opencode/AGENTS.md` à l'installation.
-- Le port 14374 sur le PC évite le conflit avec le serveur local que l'application peut lancer sur 49374.
-- Journal du serveur : `ssh devbox "journalctl -u opencode-serve -n 50 --no-pager"`.
-- Mise à jour d'OpenCode sur la VM : `ssh devbox "~/.opencode/bin/opencode upgrade && sudo systemctl restart opencode-serve"`.
+- Après une modification de configuration sur la VM : `~/.opencode/bin/opencode reload`. Si l'application ne voit pas le changement : quitte-la complètement (icône de la zone de notification comprise) et relance-la.
+- Redémarrer le serveur OpenCode de la VM : `ssh devbox "~/.opencode/bin/opencode service restart"`.
+- Mise à jour d'OpenCode sur la VM : `ssh devbox "~/.opencode/bin/opencode upgrade && ~/.opencode/bin/opencode service restart"`.
+- Évite les modèles gratuits « Free » d'OpenCode pour du code d'entreprise : ils ne passent pas par tes fournisseurs (Paramètres → Modèles pour les masquer).
 
 ## Changer la puissance
 
@@ -618,6 +661,10 @@ Supprime l'instance et son disque, le groupe de sécurité, le rôle IAM, le bud
 | `-BudgetEmail` | | e-mail de l'alerte budget |
 | `-AzureSubscription` | | abonnement Azure lu par `-Action Cost` (mémorisé) |
 | `-AzureResourceGroup` | | groupe de ressources Azure à isoler (mémorisé) |
+| `-DeepSeekResource` | | ressource Azure Foundry de DeepSeek, nom seul (`-Action OpenCode`, mémorisé) |
+| `-DeepSeekDeployment` | | nom du déploiement DeepSeek dans Foundry (`-Action OpenCode`, mémorisé) |
+| `-OrchestratorModel` | `azure/claude-opus-5-5` | modèle de l'agent orchestrateur (mémorisé) |
+| `-ExecutorModel` | `azure-deepseek/<déploiement>#high` | modèle de l'agent exécutant (mémorisé) |
 
 ## Licence
 

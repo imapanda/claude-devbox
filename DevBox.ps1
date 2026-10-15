@@ -14,8 +14,9 @@
       Cost      Cout du mois en cours : VM AWS (estimation a jour + montant facture) et, si configure,
                 abonnement Azure (-AzureSubscription, -AzureResourceGroup : memorises apres le premier appel).
       Dcv       Demarre si besoin, ouvre le tunnel DCV et le bureau dans le navigateur.
-      OpenCode  Demarre si besoin, installe OpenCode 2 sur la VM (serveur en service), ouvre le tunnel
-                et donne le lien de connexion pour l'application OpenCode (ou le navigateur).
+      OpenCode  Demarre si besoin, installe ou met a jour OpenCode 2 sur la VM pour l'application OpenCode
+                (connexion par SSH). Avec -DeepSeekResource et -DeepSeekDeployment : declare le fournisseur
+                Azure DeepSeek et cree les agents orchestrateur (Opus) et executant (DeepSeek).
       Password  Change le mot de passe du bureau DCV (utilisateur ubuntu).
       Resize    Change le type d'instance (ex. -InstanceType c8a.4xlarge).
       Idle      Change le delai d'arret automatique (ex. -IdleMinutes 60).
@@ -38,6 +39,8 @@
     .\DevBox.ps1 -Action Resize -InstanceType c8a.4xlarge
 .EXAMPLE
     .\DevBox.ps1 -Action OpenCode
+.EXAMPLE
+    .\DevBox.ps1 -Action OpenCode -DeepSeekResource ma-ressource -DeepSeekDeployment DeepSeek-V4.1-Flash
 
 .NOTES
     Si Windows bloque le script : Unblock-File .\DevBox.ps1
@@ -61,7 +64,13 @@ param(
     [int]$BudgetUsd = 150,
     [string]$BudgetEmail,
     [string]$AzureSubscription,
-    [string]$AzureResourceGroup
+    [string]$AzureResourceGroup,
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9-]*$')]
+    [string]$DeepSeekResource,
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+    [string]$DeepSeekDeployment,
+    [string]$OrchestratorModel = 'azure/claude-opus-5-5',
+    [string]$ExecutorModel
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,8 +90,8 @@ $RoleName       = "$Name-ec2-role"
 $SgName         = "$Name-sg"
 $BudgetName     = "$Name-ec2"
 $DcvLocalPort   = 18443
-$OpenCodePort      = 49374   # port par defaut d'OpenCode 2 sur la VM
-$OpenCodeLocalPort = 14374   # port local du tunnel
+$OpenCodePort   = 49374   # port par defaut du serveur OpenCode 2 sur la VM
+$RepoDir        = $PSScriptRoot
 
 New-Item -ItemType Directory -Force -Path $StateDir, $TmpDir, $SshDir | Out-Null
 
@@ -97,6 +106,10 @@ function Resolve-Setting([string]$Key, $Current) {
 $AwsProfile = Resolve-Setting 'AwsProfile' $AwsProfile
 $AccountId  = Resolve-Setting 'AccountId'  $AccountId
 $Region     = Resolve-Setting 'Region'     $Region
+$DeepSeekResource   = Resolve-Setting 'DeepSeekResource'   $DeepSeekResource
+$DeepSeekDeployment = Resolve-Setting 'DeepSeekDeployment' $DeepSeekDeployment
+$OrchestratorModel  = Resolve-Setting 'OrchestratorModel'  $OrchestratorModel
+$ExecutorModel      = Resolve-Setting 'ExecutorModel'      $ExecutorModel
 
 # --------------------------------------------------------------------------------------------
 # Script d'initialisation de la machine (cloud-init)
@@ -1219,23 +1232,47 @@ function Open-Dcv {
     Write-Info "Client DCV natif (facultatif, plus fluide) : connexion a localhost:$DcvLocalPort"
 }
 
-function Wait-LocalPort([int]$Port, [int]$TimeoutSec = 60) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        $c = New-Object System.Net.Sockets.TcpClient
-        try { $c.Connect('127.0.0.1', $Port); return $true } catch { Start-Sleep -Milliseconds 500 } finally { $c.Close() }
-    }
-    return $false
+# Modele d'agent du depot (opencode/agents/*.md, UTF-8), modele de langage insere, encode en base64
+# pour traverser SSH sans souci d'encodage (le script lui-meme reste en ASCII).
+function Get-AgentTemplate([string]$FileName, [string]$Model) {
+    $path = Join-Path (Join-Path (Join-Path $RepoDir 'opencode') 'agents') $FileName
+    if (-not (Test-Path $path)) { throw "Modele d'agent introuvable : $path (recupere le depot complet avec git pull)." }
+    $text = ([IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) -replace "`r", '').Replace('__MODEL__', $Model)
+    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+}
+
+# Envoie la cle API Azure DeepSeek sur la VM par l'entree standard de SSH : elle n'apparait ni dans
+# une ligne de commande ni dans un fichier temporaire, et n'est stockee que sur la VM (droits 600).
+function Send-DeepSeekKey([switch]$Required) {
+    $prompt = if ($Required) { 'Cle API de la ressource Azure DeepSeek' } else { 'Cle API de la ressource Azure DeepSeek (Entree : garder la cle actuelle)' }
+    $secure = Read-Host $prompt -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    if (-not $plain) { return $false }
+    $log = Join-Path $TmpDir 'ssh-opencode-key.log'
+    $plain | & ssh -E $log $Name "umask 077; mkdir -p ~/.config/opencode; tr -d '\r\n' > ~/.config/opencode/azure-deepseek.key"
+    if ($LASTEXITCODE -ne 0) { throw "Envoi de la cle sur la VM impossible : $(Get-Content $log -Tail 1 -ErrorAction SilentlyContinue)" }
+    return $true
 }
 
 function Open-OpenCode {
+    $deepSeek = [bool]($DeepSeekResource -and $DeepSeekDeployment)
+    if (($DeepSeekResource -or $DeepSeekDeployment) -and -not $deepSeek) {
+        throw 'Pour DeepSeek, donne les deux : -DeepSeekResource <nom de la ressource Azure> -DeepSeekDeployment <nom du deploiement>.'
+    }
+    $executor = if ($ExecutorModel) { $ExecutorModel } elseif ($deepSeek) { "azure-deepseek/$DeepSeekDeployment#high" } else { '' }
+    $orchB64 = ''; $execB64 = ''
+    if ($executor) {
+        $orchB64 = Get-AgentTemplate 'orchestrateur.md' $OrchestratorModel
+        $execB64 = Get-AgentTemplate 'executant.md' $executor
+    }
+
     Start-DevBox -Quiet
-    $id = Get-InstanceIdOrThrow
 
     Write-Step 'OpenCode 2 sur la VM'
-    # Idempotent : installe ou met a jour OpenCode 2, fait tourner son serveur (opencode serve --service,
-    # 127.0.0.1 uniquement, mot de passe genere par OpenCode) en service systemd demarre avec la VM,
-    # compte une application connectee comme activite pour l'arret automatique, et produit un lien d'appairage.
+    # Idempotent. L'application OpenCode se connecte par SSH (hote $Name) et demarre elle-meme le serveur
+    # OpenCode de la VM : ce script installe ou met a jour OpenCode 2, compte une application connectee
+    # comme activite pour l'arret automatique, et, si demande, declare Azure DeepSeek et les deux agents.
     $setup = @'
 set -e
 export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
@@ -1248,101 +1285,126 @@ esac
 OC="$HOME/.opencode/bin/opencode"
 [ -x "$OC" ] || OC=$(command -v opencode || true)
 if [ -z "$OC" ]; then echo "opencode introuvable apres installation" >&2; exit 1; fi
-mkdir -p "$HOME/projets" "$HOME/.config/opencode"
-if [ ! -f "$HOME/.config/opencode/AGENTS.md" ] && [ -f "$HOME/.claude/CLAUDE.md" ]; then
-  cp "$HOME/.claude/CLAUDE.md" "$HOME/.config/opencode/AGENTS.md"
+CFG="$HOME/.config/opencode"
+mkdir -p "$HOME/projets" "$CFG/agents"
+if [ ! -f "$CFG/AGENTS.md" ] && [ -f "$HOME/.claude/CLAUDE.md" ]; then
+  cp "$HOME/.claude/CLAUDE.md" "$CFG/AGENTS.md"
 fi
-UNIT=/etc/systemd/system/opencode-serve.service
-WANT=$(cat <<EOF
-[Unit]
-Description=OpenCode 2 server (devbox)
-After=network-online.target
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/projets
-Environment=PATH=/home/ubuntu/.opencode/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=$OC serve --service
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-EOF
-)
-if [ "$(cat "$UNIT" 2>/dev/null)" != "$WANT" ]; then
-  "$OC" service stop >/dev/null 2>&1 || true
-  printf '%s\n' "$WANT" | sudo tee "$UNIT" >/dev/null
+# Anciennes versions du script : serveur en service systemd. L'application le gere maintenant elle-meme.
+if [ -f /etc/systemd/system/opencode-serve.service ]; then
+  sudo systemctl disable --now opencode-serve >/dev/null 2>&1 || true
+  sudo rm -f /etc/systemd/system/opencode-serve.service
   sudo systemctl daemon-reload
-  sudo systemctl enable opencode-serve >/dev/null 2>&1
-  sudo systemctl restart opencode-serve
-else
-  sudo systemctl enable --now opencode-serve >/dev/null 2>&1
+  echo "OLD_UNIT_REMOVED"
 fi
 IDLE=/usr/local/bin/devbox-idle-check
-if ! grep -q 'sport = :__PORT__' "$IDLE"; then
+if [ -f "$IDLE" ] && ! grep -q 'sport = :__PORT__' "$IDLE"; then
   sudo sed -i -e 's/ or sport = :4096 )/ )/' -e 's/( sport = :8443 )/( sport = :8443 or sport = :__PORT__ )/' "$IDLE"
 fi
-for i in $(seq 1 30); do curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && break; sleep 1; done
-curl -s --noproxy '*' -o /dev/null http://127.0.0.1:__PORT__/ && echo "SERVER_OK"
+DS_RES='__DS_RES__'
+DS_DEP='__DS_DEP__'
+if [ -n "$DS_RES" ] && [ -n "$DS_DEP" ]; then
+  if [ -f "$CFG/opencode.jsonc" ]; then F="$CFG/opencode.jsonc"
+  elif [ -f "$CFG/opencode.json" ]; then F="$CFG/opencode.json"
+  else F="$CFG/opencode.jsonc"; echo '{}' > "$F"
+  fi
+  if jq empty "$F" >/dev/null 2>&1; then
+    T=$(mktemp)
+    jq --arg res "$DS_RES" --arg dep "$DS_DEP" '.provider["azure-deepseek"] = {
+      name: "Azure DeepSeek",
+      npm: "@ai-sdk/openai-compatible",
+      options: {
+        baseURL: ("https://" + $res + ".openai.azure.com/openai/v1"),
+        apiKey: "{file:~/.config/opencode/azure-deepseek.key}"
+      },
+      models: { ($dep): { name: "DeepSeek V4.1 Flash", limit: { context: 1000000, output: 128000 } } }
+    }' "$F" > "$T"
+    mv "$T" "$F"
+    echo "DS_PROVIDER_OK"
+  else
+    echo "DS_CONFIG_UNREADABLE=$F"
+  fi
+  [ -s "$CFG/azure-deepseek.key" ] || echo "DS_KEY_MISSING"
+fi
+ORCH_B64='__ORCH_B64__'
+EXEC_B64='__EXEC_B64__'
+if [ -n "$EXEC_B64" ]; then
+  for a in orchestrateur executant; do
+    f="$CFG/agents/$a.md"
+    if [ -f "$f" ]; then echo "AGENT_KEPT=$a"; continue; fi
+    if [ "$a" = orchestrateur ]; then b="$ORCH_B64"; else b="$EXEC_B64"; fi
+    printf '%s' "$b" | base64 -d > "$f"
+    echo "AGENT_CREATED=$a"
+  done
+fi
+"$OC" service start >/dev/null 2>&1 || true
+"$OC" reload >/dev/null 2>&1 || true
 echo "VERSION=$("$OC" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
-echo "PASSWORD=$(jq -r '.password // empty' "$HOME/.config/opencode/service.json" 2>/dev/null)"
-echo "PAIR=$("$OC" pair 2>/dev/null | grep -oE 'http://127\.0\.0\.1:[0-9]+/auth/connect/[A-Za-z0-9_-]+' | head -n 1)"
+echo "SETUP_OK"
 '@
-    $setup = ($setup -replace "`r", '') -replace '__PORT__', $OpenCodePort
+    $setup = ($setup -replace "`r", '').Replace('__PORT__', [string]$OpenCodePort)
+    $setup = $setup.Replace('__DS_RES__', [string]$DeepSeekResource).Replace('__DS_DEP__', [string]$DeepSeekDeployment)
+    $setup = $setup.Replace('__ORCH_B64__', $orchB64).Replace('__EXEC_B64__', $execB64)
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($setup))
     $log = Join-Path $TmpDir 'ssh-opencode.log'
-    $out = @(& ssh -E $log $Name "echo $b64 | base64 -d > /tmp/devbox-opencode.sh && bash /tmp/devbox-opencode.sh")
+    $out = @(& ssh -E $log $Name "echo $b64 | base64 -d > /tmp/devbox-opencode.sh && bash /tmp/devbox-opencode.sh; rc=`$?; rm -f /tmp/devbox-opencode.sh; exit `$rc")
     $text = $out -join "`n"
-    if ($text -notmatch 'SERVER_OK') {
-        throw "Le serveur OpenCode ne repond pas sur la VM. Journal : ssh $Name `"journalctl -u opencode-serve -n 30 --no-pager`""
+    if ($text -notmatch 'SETUP_OK') {
+        $sshError = Get-Content $log -Tail 1 -ErrorAction SilentlyContinue
+        throw "Installation d'OpenCode sur la VM en echec. $sshError"
     }
     $version = if ($text -match 'VERSION=(\d+\.\d+\.\d+)') { $Matches[1] } else { '?' }
-    Write-Ok "OpenCode $version actif sur la VM"
+    Write-Ok "OpenCode $version pret sur la VM"
+    if ($text -match 'OLD_UNIT_REMOVED') { Write-Ok "Ancien service opencode-serve retire : l'application gere le serveur par SSH" }
 
-    Write-Step 'Tunnel vers OpenCode'
-    # Port local different du port de la VM : l'application OpenCode peut deja utiliser 49374 sur le PC.
-    if (Wait-LocalPort $OpenCodeLocalPort 1) {
-        Write-Ok "Tunnel deja ouvert sur 127.0.0.1:$OpenCodeLocalPort"
-    }
-    else {
-        $tunnel = "Write-Host 'Tunnel OpenCode actif sur 127.0.0.1:$OpenCodeLocalPort. Laisse cette fenetre ouverte pendant que tu utilises OpenCode, ferme-la pour couper.'; " +
-                  "aws ssm start-session --target $id --document-name AWS-StartPortForwardingSession " +
-                  "--parameters 'portNumber=$OpenCodePort,localPortNumber=$OpenCodeLocalPort' --profile $AwsProfile --region $Region"
-        Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoExit -NoProfile -Command `"$tunnel`""
-        if (-not (Wait-LocalPort $OpenCodeLocalPort 60)) { throw "Tunnel SSM vers le port $OpenCodePort impossible." }
-        Write-Ok "Tunnel ouvert sur 127.0.0.1:$OpenCodeLocalPort (fenetre separee)"
+    if ($deepSeek) {
+        Write-Step 'Fournisseur Azure DeepSeek'
+        if ($text -match 'DS_CONFIG_UNREADABLE=(\S+)') {
+            Write-Warning "$($Matches[1]) contient des commentaires ou n'est pas du JSON valide : fournisseur non ajoute. Voir le README, section OpenCode."
+        }
+        elseif ($text -match 'DS_PROVIDER_OK') {
+            Write-Ok "azure-deepseek/$DeepSeekDeployment (ressource $DeepSeekResource)"
+        }
+        $missing = $text -match 'DS_KEY_MISSING'
+        if ($missing -or $Bound.ContainsKey('DeepSeekResource')) {
+            if (Send-DeepSeekKey -Required:$missing) {
+                & ssh -E $log $Name '~/.opencode/bin/opencode reload >/dev/null 2>&1 || true' | Out-Null
+                Write-Ok 'Cle enregistree sur la VM uniquement (~/.config/opencode/azure-deepseek.key, droits 600)'
+            }
+            elseif ($missing) {
+                Write-Warning "Aucune cle : relance .\DevBox.ps1 -Action OpenCode pour la saisir."
+            }
+        }
+        Save-State @{ DeepSeekResource = $DeepSeekResource; DeepSeekDeployment = $DeepSeekDeployment }
     }
 
-    $pair = if ($text -match 'PAIR=(http\S+)') { $Matches[1] -replace '127\.0\.0\.1:\d+', "127.0.0.1:$OpenCodeLocalPort" } else { $null }
-    Write-Host ''
-    Write-Host "Serveur OpenCode : http://127.0.0.1:$OpenCodeLocalPort" -ForegroundColor Green
-    if ($pair) {
-        $copied = $false
-        try { Set-Clipboard -Value $pair; $copied = $true } catch { }
-        Write-Host "Lien de connexion (une seule utilisation, valable 5 min)$(if ($copied) { ', copie dans le presse-papiers' }) :"
-        Write-Host "  $pair" -ForegroundColor Cyan
+    if ($executor) {
+        Write-Step 'Agents'
+        foreach ($m in [regex]::Matches($text, 'AGENT_(CREATED|KEPT)=(\w+)')) {
+            $agent = $m.Groups[2].Value
+            if ($m.Groups[1].Value -eq 'CREATED') { Write-Ok "$agent cree" }
+            else { Write-Info "$agent deja present sur la VM, conserve (pour le recreer : supprime ~/.config/opencode/agents/$agent.md puis relance)" }
+        }
+        Write-Info "Orchestrateur : $OrchestratorModel   Executant : $executor"
+        $models = @{}
+        if ($Bound.ContainsKey('OrchestratorModel')) { $models.OrchestratorModel = $OrchestratorModel }
+        if ($Bound.ContainsKey('ExecutorModel')) { $models.ExecutorModel = $ExecutorModel }
+        if ($models.Count) { Save-State $models }
+    }
+
+    Write-Host @"
+
+Dans l'application OpenCode (une seule fois) :
+  1. Ajouter un serveur > Ajouter le serveur SSH, commande hote : $Name, puis Se connecter
+  2. Ajouter un projet > un dossier de /home/ubuntu/projets
+"@
+    if ($executor) {
         Write-Host @"
-  Premiere fois : colle ce lien dans l'application OpenCode (adresse du serveur).
-  Ensuite       : ouvre simplement l'application, elle se reconnecte (30 jours).
-  Sans l'app    : colle le lien dans ton navigateur (interface web).
-  Fin           : ferme l'application puis la fenetre du tunnel.
+  3. Parametres > Preferences > Agents personnalises : active
+  4. Dans la zone de saisie : agent orchestrateur, effort High (Ctrl+. pour changer d'agent)
 "@
     }
-    $srvPassword = if ($text -match 'PASSWORD=(\S+)') { $Matches[1] } else { $null }
-    if ($srvPassword) {
-        Write-Host @"
-
-Connexion manuelle (si l'application demande les champs du serveur, accueil : Ctrl+B) :
-  Nom         : $Name
-  Serveur     : http://127.0.0.1:$OpenCodeLocalPort
-  Utilisateur : opencode
-  Mot de passe: $srvPassword
-  Dossier     : /home/ubuntu/projets
-"@
-    }
-    else {
-        Write-Warning "Lien de connexion indisponible : ssh $Name `"~/.opencode/bin/opencode pair`""
-    }
+    Write-Host "Ensuite : devbox start, puis ouvre l'application (elle se reconnecte a la VM allumee)."
 }
 
 function Set-DevBoxType {
